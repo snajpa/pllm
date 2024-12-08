@@ -37,8 +37,37 @@ class SessionManager
   end  
 
   def send_keys(keys)
-    sanitized_keys = keys.gsub('"', '\"')
-    system("tmux send-keys -t #{@session_name} \"#{sanitized_keys}\" Enter")
+    parsed_keys = parse_key_sequence(keys)
+    system("tmux send-keys -t #{@session_name} #{parsed_keys}")
+  end
+
+  def parse_key_sequence(keys)
+    key_mappings = {
+      'Enter' => 'Enter',
+      'Tab' => 'Tab',
+      'Backspace' => 'Backspace',
+      'Space' => 'Space',
+      'Escape' => 'Escape',
+      'Up' => 'Up',
+      'Down' => 'Down',
+      'Left' => 'Left',
+      'Right' => 'Right'
+    }
+
+    keys.map do |key|
+      key.strip!
+
+      # Handle Ctrl+<letter> or Alt+<letter> sequences
+      if key =~ /^Ctrl\+([A-Za-z])$/
+        "\"C-#{$1.downcase}\""
+      elsif key =~ /^Alt\+([A-Za-z])$/
+        "\"M-#{$1.downcase}\""
+      elsif key_mappings.key?(key)
+        "\"#{key_mappings[key]}\""
+      else
+        "\"#{key}\""
+      end
+    end.join(' ')
   end
 
   def capture_output
@@ -61,9 +90,9 @@ class Scratchpad
     @content = "First iteration"
   end
 
-  def update(reasoning)
+  def update(reasoning, new_content)
     timestamp = Time.now.utc.iso8601
-    @content += "\n[#{timestamp}] #{reasoning}"
+    @content += "\n[#{timestamp}] #{reasoning}\n#{new_content}"
   end
 
   def to_s
@@ -87,7 +116,7 @@ class LLMClient
     JSON.parse(response.body)
   rescue JSON::ParserError => e
     @logger.error("Failed to parse LLM response: #{e}")
-    { 'reasoning' => 'Error parsing response', 'actions' => [], 'mission_complete' => false }
+    { 'reasoning' => 'Error parsing response.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad' => 'Error parsing response.' }
   end
 end
 
@@ -118,16 +147,30 @@ class PLLMController
 
   def build_prompt(terminal_state)
 <<~PROMPT
-You are an useful sofware system designed to suggest key presses to a human user.
+You are a helpful software system designed to suggest key presses to accomplish the given mission.
 
 You are being run iteratively to complete a mission.
 
 Every iteration, you receive:
 - the mission statement
 - the current state of the terminal
-- the scratchpad from previous iteration
+- the scratchpad from the previous iteration
 
-You are given an opportunity to generate new scratchpad, which is given to your next iteration, so it's probably best if you condense the previous and add whatever you need to ensure the user completes the mission in least possible iterations.
+You can provide reasoning, a set of key presses, and a new scratchpad message to achieve the mission.
+
+Special key format:
+- Use 'Ctrl+<letter>' for Control key combinations (e.g., 'Ctrl+C')
+- Use 'Alt+<letter>' for Alt key combinations (e.g., 'Alt+F')
+- Special keys: 'Enter', 'Tab', 'Backspace', 'Space', 'Escape', 'Up', 'Down', 'Left', 'Right'
+
+Return your response in the following JSON format:
+
+{
+  "reasoning": "Explain your thought process here.",
+  "keypresses": ["Enter", "Ctrl+S", "Ctrl+X"],
+  "mission_complete": false,
+  "new_scratchpad": "Add any notes or context for the next iteration."
+}
 
 -------------------------------------------------------------------------------
 Mission statement
@@ -146,30 +189,28 @@ Terminal State:
 -------------------------------------------------------------------------------
 #{terminal_state}
 -------------------------------------------------------------------------------
-
 PROMPT
   end
 
   def process_response(response)
     # Output the prompt and the raw response for transparency
-    puts "\n--- Prompt Sent to LLM ---"
-    puts build_prompt(@session_manager.capture_output)
-    
     puts "\n--- Raw Response from LLM ---"
     puts response.to_json
-  
-    # Extract reasoning and actions safely
+
+    # Extract fields from the response
     reasoning = response['reasoning']
-    actions = response['actions'] || []
+    keypresses = response['keypresses'] || []
     @mission_complete = response['mission_complete']
-  
+    new_scratchpad = response['new_scratchpad']
+
     @logger.info("Reasoning: #{reasoning}")
-    @scratchpad.update(reasoning)
-  
-    actions.each do |action|
-      keys = action['keys']
-      @logger.info("Executing keys: #{keys}")
-      @session_manager.send_keys(keys)
+    @logger.info("New Scratchpad: #{new_scratchpad}")
+    @scratchpad.update(reasoning, new_scratchpad)
+
+    # Execute keypresses
+    unless keypresses.empty?
+      @logger.info("Executing keypresses: #{keypresses.join(', ')}")
+      @session_manager.send_keys(keypresses)
       sleep(1) # Give some time for command execution
     end
   end
