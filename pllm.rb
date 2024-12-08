@@ -21,7 +21,8 @@ logger.level = Logger::DEBUG
 class SessionManager
   attr_reader :session_name
 
-  def initialize
+  def initialize(logger)
+    @logger = logger
     @session_name = "pllm-#{SecureRandom.uuid}"
     create_session
   end
@@ -29,10 +30,11 @@ class SessionManager
   def create_session
     system("tmux new-session -d -s #{@session_name} -n main")
     system("tmux set-option -t #{@session_name} status off")
-    logger.info("Created TMux session #{@session_name}")
+    system("tmux resize-pane -t #{@session_name} -x 80 -y 40")
+    @logger.info("Created TMux session #{@session_name} with window size 80x40")
   rescue StandardError => e
-    logger.error("Failed to create TMux session: #{e}")
-  end
+    @logger.error("Failed to create TMux session: #{e}")
+  end  
 
   def send_keys(keys)
     sanitized_keys = keys.gsub('"', '\"')
@@ -47,7 +49,7 @@ class SessionManager
 
   def cleanup
     system("tmux kill-session -t #{@session_name}")
-    logger.info("Killed TMux session #{@session_name}")
+    @logger.info("Killed TMux session #{@session_name}")
   end
 end
 
@@ -71,8 +73,9 @@ end
 
 # Handles communication with the LLM API
 class LLMClient
-  def initialize(endpoint)
+  def initialize(endpoint, logger)
     @endpoint = endpoint
+    @logger = logger
   end
 
   def query(prompt)
@@ -83,17 +86,18 @@ class LLMClient
     response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
     JSON.parse(response.body)
   rescue JSON::ParserError => e
-    logger.error("Failed to parse LLM response: #{e}")
+    @logger.error("Failed to parse LLM response: #{e}")
     { 'reasoning' => 'Error parsing response', 'actions' => [], 'mission_complete' => false }
   end
 end
 
 # Main controller
 class PLLMController
-  def initialize
-    @session_manager = SessionManager.new
+  def initialize(logger)
+    @logger = logger
+    @session_manager = SessionManager.new(logger)
     @scratchpad = Scratchpad.new
-    @llm_client = LLMClient.new(LLAMA_API_ENDPOINT)
+    @llm_client = LLMClient.new(LLAMA_API_ENDPOINT, logger)
     @mission_complete = false
   end
 
@@ -113,27 +117,58 @@ class PLLMController
   private
 
   def build_prompt(terminal_state)
-    <<~PROMPT
-      Mission: #{MISSION}
-      Scratchpad: #{@scratchpad}
-      Terminal State:
-      #{terminal_state}
+<<~PROMPT
+You are an useful sofware system designed to suggest key presses to a human user.
 
-      What should be done next? Provide reasoning and actions.
-    PROMPT
+You are being run iteratively to complete a mission.
+
+Every iteration, you receive:
+- the mission statement
+- the current state of the terminal
+- the scratchpad from previous iteration
+
+You are given an opportunity to generate new scratchpad, which is given to your next iteration, so it's probably best if you condense the previous and add whatever you need to ensure the user completes the mission in least possible iterations.
+
+-------------------------------------------------------------------------------
+Mission statement
+-------------------------------------------------------------------------------
+#{MISSION}
+-------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------
+Scratchpad:
+-------------------------------------------------------------------------------
+#{@scratchpad}
+-------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------
+Terminal State:
+-------------------------------------------------------------------------------
+#{terminal_state}
+-------------------------------------------------------------------------------
+
+PROMPT
   end
 
   def process_response(response)
+    # Output the prompt and the raw response for transparency
+    puts "\n--- Prompt Sent to LLM ---"
+    puts build_prompt(@session_manager.capture_output)
+    
+    puts "\n--- Raw Response from LLM ---"
+    puts response.to_json
+  
+    # Extract reasoning and actions safely
     reasoning = response['reasoning']
-    actions = response['actions']
+    actions = response['actions'] || []
     @mission_complete = response['mission_complete']
-
-    logger.info("Reasoning: #{reasoning}")
+  
+    @logger.info("Reasoning: #{reasoning}")
     @scratchpad.update(reasoning)
-
+  
     actions.each do |action|
       keys = action['keys']
-      logger.info("Executing keys: #{keys}")
+      @logger.info("Executing keys: #{keys}")
       @session_manager.send_keys(keys)
       sleep(1) # Give some time for command execution
     end
@@ -141,5 +176,5 @@ class PLLMController
 end
 
 # --- Run the PLLM Controller ---
-controller = PLLMController.new
+controller = PLLMController.new(logger)
 controller.run
