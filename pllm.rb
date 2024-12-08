@@ -1,182 +1,145 @@
+require 'securerandom'
 require 'net/http'
+require 'uri'
 require 'json'
+require 'logger'
 require 'open3'
-require 'fileutils'
 require 'time'
 
-# --- CONSTANTS ---
+# --- Constants ---
+LLAMA_API_ENDPOINT = 'http://localhost:8080/v1/completions'
+MISSION = 'Write a Python script that calculates prime numbers up to 100.'
+LOG_FILE = 'pllm.log'
 
-# LLaMA.cpp API Endpoint
-LLAMA_API_URL = 'http://localhost:8080/v1/completions'
+# --- Logger Setup ---
+logger = Logger.new(LOG_FILE, 'daily')
+logger.level = Logger::DEBUG
 
-# Mission Description
-MISSION = <<~MISSION
-  Your mission is to execute the tasks described and take notes in an organized manner.
-  You have two terminal windows available:
-  1. **Workspace** - For running commands and executing code.
-  2. **Notes** - For writing observations, conclusions, and key points.
+# --- Classes ---
 
-  You can send any keypresses to these windows. Your goal is to achieve the mission with the fewest steps possible.
-MISSION
+# Manages the TMux session
+class SessionManager
+  attr_reader :session_name
 
-# Context Introduction
-INTRO = <<~INTRO
-  You have two windows in a `tmux` session:
-  - **Window 0**: Workspace where commands are executed.
-  - **Window 1**: Notes where you write down important points.
+  def initialize
+    @session_name = "pllm-#{SecureRandom.uuid}"
+    create_session
+  end
 
-  You can send keypresses and commands to these windows. Make efficient decisions to complete the mission.
-INTRO
+  def create_session
+    system("tmux new-session -d -s #{@session_name} -n main")
+    system("tmux set-option -t #{@session_name} status off")
+    logger.info("Created TMux session #{@session_name}")
+  rescue StandardError => e
+    logger.error("Failed to create TMux session: #{e}")
+  end
 
-# Number of Iterations to Run
-MAX_ITERATIONS = 20
+  def send_keys(keys)
+    sanitized_keys = keys.gsub('"', '\"')
+    system("tmux send-keys -t #{@session_name} \"#{sanitized_keys}\" Enter")
+  end
 
-# Tmux Session Name
-SESSION_NAME = 'llm_mission'
+  def capture_output
+    stdout, stderr, status = Open3.capture3("tmux capture-pane -pt #{@session_name}")
+    raise "TMux capture error: #{stderr}" unless status.success?
+    stdout
+  end
 
-# Path to Capture Output Files
-WORKSPACE_CAPTURE = '/tmp/workspace_output.txt'
-NOTES_CAPTURE = '/tmp/notes_output.txt'
-
-# Log Directory Setup
-LOG_DIR_BASE = 'logs'
-CURRENT_RUN_LINK = 'current_run'
-
-# --- FUNCTIONS ---
-
-# Initialize tmux session with two windows
-def setup_tmux_session
-  system("tmux new-session -d -s #{SESSION_NAME} -n workspace")
-  system("tmux new-window -t #{SESSION_NAME} -n notes")
-  puts "[INFO] Tmux session '#{SESSION_NAME}' initialized with two windows."
+  def cleanup
+    system("tmux kill-session -t #{@session_name}")
+    logger.info("Killed TMux session #{@session_name}")
+  end
 end
 
-# Create log directory for the current run
-def setup_log_directory
-  timestamp = Time.now.strftime('%Y%m%d_%H%M%S')
-  log_dir = File.join(LOG_DIR_BASE, "run_#{timestamp}")
-  FileUtils.mkdir_p(log_dir)
-  FileUtils.rm_f(CURRENT_RUN_LINK)
-  FileUtils.ln_s(log_dir, CURRENT_RUN_LINK)
-  puts "[INFO] Log directory created at #{log_dir}"
-  log_dir
+# Manages the scratchpad state
+class Scratchpad
+  attr_reader :content
+
+  def initialize
+    @content = "First iteration"
+  end
+
+  def update(reasoning)
+    timestamp = Time.now.utc.iso8601
+    @content += "\n[#{timestamp}] #{reasoning}"
+  end
+
+  def to_s
+    @content
+  end
 end
 
-# Capture the content of the workspace and notes windows
-def capture_tmux_windows
-  system("tmux capture-pane -pt #{SESSION_NAME}:0 > #{WORKSPACE_CAPTURE}")
-  system("tmux capture-pane -pt #{SESSION_NAME}:1 > #{NOTES_CAPTURE}")
+# Handles communication with the LLM API
+class LLMClient
+  def initialize(endpoint)
+    @endpoint = endpoint
+  end
+
+  def query(prompt)
+    uri = URI.parse(@endpoint)
+    request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
+    request.body = { prompt: prompt, max_tokens: 256 }.to_json
+
+    response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+    JSON.parse(response.body)
+  rescue JSON::ParserError => e
+    logger.error("Failed to parse LLM response: #{e}")
+    { 'reasoning' => 'Error parsing response', 'actions' => [], 'mission_complete' => false }
+  end
 end
 
-# Read the captured content from files
-def read_captured_content
-  workspace_content = File.read(WORKSPACE_CAPTURE)
-  notes_content = File.read(NOTES_CAPTURE)
-  [workspace_content, notes_content]
-end
+# Main controller
+class PLLMController
+  def initialize
+    @session_manager = SessionManager.new
+    @scratchpad = Scratchpad.new
+    @llm_client = LLMClient.new(LLAMA_API_ENDPOINT)
+    @mission_complete = false
+  end
 
-# Send keypresses to a specific tmux window
-def send_keypresses(window, commands)
-  system("tmux send-keys -t #{SESSION_NAME}:#{window} \"#{commands}\" Enter")
-end
+  def run
+    while !@mission_complete
+      terminal_state = @session_manager.capture_output
+      prompt = build_prompt(terminal_state)
+      response = @llm_client.query(prompt)
+      process_response(response)
+    end
+    @session_manager.cleanup
+  rescue Interrupt
+    puts "\nInterrupted. Cleaning up..."
+    @session_manager.cleanup
+  end
 
-# Query the LLaMA API with the mission, context, and window contents
-def query_llm(mission, intro, workspace, notes, log_dir, iteration)
-  prompt = <<~PROMPT
-    #{mission}
+  private
 
-    #{intro}
+  def build_prompt(terminal_state)
+    <<~PROMPT
+      Mission: #{MISSION}
+      Scratchpad: #{@scratchpad}
+      Terminal State:
+      #{terminal_state}
 
-    --- Workspace Window Content ---
-    #{workspace}
+      What should be done next? Provide reasoning and actions.
+    PROMPT
+  end
 
-    --- Notes Window Content ---
-    #{notes}
+  def process_response(response)
+    reasoning = response['reasoning']
+    actions = response['actions']
+    @mission_complete = response['mission_complete']
 
-    Based on the mission, decide the next keypresses to send to each window. Format your response as:
-    {"workspace": "<keypresses for workspace>", "notes": "<keypresses for notes>"}.
-  PROMPT
+    logger.info("Reasoning: #{reasoning}")
+    @scratchpad.update(reasoning)
 
-  # Log the prompt to a file
-  prompt_log_file = File.join(log_dir, "iteration_#{iteration}_prompt.txt")
-  File.write(prompt_log_file, prompt)
-  puts "[INFO] Prompt saved to #{prompt_log_file}"
-
-  # Display the prompt on stdout
-  system('clear')
-  puts "========== PROMPT =========="
-  puts prompt
-  puts "============================"
-
-  uri = URI(LLAMA_API_URL)
-  headers = { 'Content-Type' => 'application/json' }
-  body = {
-    model: 'llama',
-    prompt: prompt,
-    max_tokens: 200,
-    stream: true
-  }
-
-  # Send the request and handle streaming response
-  request = Net::HTTP::Post.new(uri, headers)
-  request.body = body.to_json
-
-  puts "\n========== LLM OUTPUT =========="
-  response_log_file = File.join(log_dir, "iteration_#{iteration}_output.txt")
-  File.open(response_log_file, 'w') do |file|
-    Net::HTTP.start(uri.hostname, uri.port) do |http|
-      http.request(request) do |res|
-        res.read_body do |chunk|
-          json = JSON.parse(chunk) rescue nil
-          if json && json['choices']
-            text = json['choices'][0]['text']
-            print text
-            file.write(text)
-          end
-        end
-      end
+    actions.each do |action|
+      keys = action['keys']
+      logger.info("Executing keys: #{keys}")
+      @session_manager.send_keys(keys)
+      sleep(1) # Give some time for command execution
     end
   end
-  puts "\n============================"
-  puts "[INFO] LLM Output saved to #{response_log_file}"
-
-  # Read and return the saved response
-  JSON.parse(File.read(response_log_file))
-rescue StandardError => e
-  puts "[ERROR] LLaMA API request failed: #{e.message}"
-  '{"workspace": "", "notes": ""}'
 end
 
-# Main Loop
-def run_mission
-  setup_tmux_session
-  log_dir = setup_log_directory
-
-  MAX_ITERATIONS.times do |iteration|
-    puts "\n[INFO] Starting Iteration #{iteration + 1}..."
-
-    # Capture current window contents
-    capture_tmux_windows
-    workspace_content, notes_content = read_captured_content
-
-    # Get the LLM's decision
-    llm_response = query_llm(MISSION, INTRO, workspace_content, notes_content, log_dir, iteration + 1)
-    commands = llm_response.is_a?(Hash) ? llm_response : JSON.parse(llm_response)
-    workspace_cmd = commands['workspace'] || ''
-    notes_cmd = commands['notes'] || ''
-
-    # Dispatch the commands to the appropriate tmux windows
-    send_keypresses(0, workspace_cmd) unless workspace_cmd.empty?
-    send_keypresses(1, notes_cmd) unless notes_cmd.empty?
-
-    # Wait for commands to execute before the next iteration
-    sleep(2)
-
-    puts "[INFO] Iteration #{iteration + 1} complete."
-  end
-
-  puts "\n[INFO] Mission execution finished."
-end
-
-# --- ENTRY POINT ---
-run_mission
+# --- Run the PLLM Controller ---
+controller = PLLMController.new
+controller.run
