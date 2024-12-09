@@ -34,32 +34,65 @@ def send_keys_to_tmux(session_name, keys, logger)
   key_mappings = {
     '<enter>' => 'Enter',
     '<tab>' => 'Tab',
-    '<backspace>' => 'Backspace',
+    '<backspace>' => 'BSpace',
     '<space>' => 'Space',
     '<escape>' => 'Escape',
     '<up>' => 'Up',
     '<down>' => 'Down',
     '<left>' => 'Left',
-    '<right>' => 'Right'
+    '<right>' => 'Right',
+    '<home>' => 'Home',
+    '<end>' => 'End',
+    '<pageup>' => 'PageUp',
+    '<pagedown>' => 'PageDown',
+    '<insert>' => 'Insert',
+    '<delete>' => 'Delete'
   }
 
   keys.each do |key|
-    key.strip!
+    key = key.downcase.strip
 
-    if key =~ /^<ctrl\+([a-z])>$/i
-      logger.info("Sending Ctrl key: C-#{$1.downcase}")
-      system("tmux send-keys -t #{session_name} C-#{$1.downcase}")
-    elsif key =~ /^<alt\+([a-z])>$/i
-      logger.info("Sending Alt key: M-#{$1.downcase}")
-      system("tmux send-keys -t #{session_name} M-#{$1.downcase}")
-    elsif key_mappings.key?(key.downcase)
-      logger.info("Sending special key: #{key_mappings[key.downcase]}")
-      system("tmux send-keys -t #{session_name} #{key_mappings[key.downcase]}")
+    # Check for combined commands like "2<Enter>"
+    if key.include?('<')
+      parts = key.split('<')
+      text = parts[0]
+      command = "<#{parts[1]}"
+
+      unless text.empty?
+        logger.info("Sending plain text: #{text}")
+        text.chars.each do |char|
+          system("tmux send-keys -t #{session_name} \"#{char}\"")
+        end
+      end
+
+      if key_mappings.key?(command)
+        logger.info("Sending special key: #{key_mappings[command]}")
+        system("tmux send-keys -t #{session_name} #{key_mappings[command]}")
+      elsif match = command.match(/^<(ctrl|c)-([a-z])>$/)
+        modifier, char = match[1], match[2]
+        logger.info("Sending Ctrl key: C-#{char}")
+        system("tmux send-keys -t #{session_name} C-#{char}")
+      elsif match = command.match(/^<(alt|a|meta|m)-([a-z])>$/)
+        modifier, char = match[1], match[2]
+        logger.info("Sending Alt key: M-#{char}")
+        system("tmux send-keys -t #{session_name} M-#{char}")
+      elsif match = command.match(/^<(shift|s)-([a-z])>$/)
+        modifier, char = match[1], match[2]
+        logger.info("Sending Shift key: S-#{char}")
+        system("tmux send-keys -t #{session_name} S-#{char}")
+      else
+        logger.warn("Unknown key command: #{command}")
+      end
     else
-      # Send plain text character by character
-      logger.info("Sending plain text: #{key}")
-      key.chars.each do |char|
-        system("tmux send-keys -t #{session_name} \"#{char}\"")
+      # Regular plain text or single key command
+      if key_mappings.key?("<#{key}>")
+        logger.info("Sending special key: #{key_mappings["<#{key}>"]}")
+        system("tmux send-keys -t #{session_name} #{key_mappings["<#{key}>"]}")
+      else
+        logger.info("Sending plain text: #{key}")
+        key.chars.each do |char|
+          system("tmux send-keys -t #{session_name} \"#{char}\"")
+        end
       end
     end
 
@@ -76,9 +109,8 @@ def capture_tmux_output(session_name)
   normalized_output = stdout.lines.map { |line| line.chomp.ljust(80)[0, 80] }
   normalized_output += Array.new(40 - normalized_output.size, ' ' * 80) if normalized_output.size < 40
 
-  { content: normalized_output.join("\n") }
+  { content: normalized_output.join("\n"), cursor: { x: 0, y: normalized_output.size - 1 } }
 end
-
 
 def cleanup_tmux_session(session_name, logger)
   system("tmux kill-session -t #{session_name}")
@@ -92,27 +124,41 @@ def query_llm(endpoint, prompt, logger)
 
   begin
     full_response = ""
+    bracket_count = 0
+    current_json = ""
+    response = nil
 
     Net::HTTP.start(uri.hostname, uri.port) do |http|
       http.request(request) do |response|
         response.read_body do |chunk|
           begin
-            # Handle the "data: " prefix if present
             chunk.strip!
-            next unless chunk.start_with?('data: ')
+            if chunk.start_with?('data: ')
+              content = JSON.parse(chunk[6..-1])["content"]
+              if content && !content.strip.empty?
+                print content
+                $stdout.flush
+                full_response += content
 
-            # Remove the "data: " prefix and parse the outer JSON
-            outer_json = JSON.parse(chunk[6..-1])
-
-            # Extract the 'content' field from the outer JSON
-            content = outer_json["content"]
-
-            if content && !content.strip.empty?
-              # Print the content field
-              print content
-              $stdout.flush
-
-              full_response += content
+                # Track brackets
+                content.chars.each do |char|
+                  case char
+                  when '{'
+                    bracket_count += 1
+                    current_json += char
+                  when '}'
+                    bracket_count -= 1
+                    current_json += char
+                    if bracket_count == 0 && !current_json.strip.empty?
+                      # We have a complete JSON response, yield it and return
+                      yield current_json
+                      return
+                    end
+                  else
+                    current_json += char
+                  end
+                end
+              end
             end
           rescue JSON::ParserError => e
             logger.error("Error parsing chunk: #{e}")
@@ -121,92 +167,45 @@ def query_llm(endpoint, prompt, logger)
       end
     end
 
-    # Parse the full accumulated response as JSON
-    parsed_inner_json = JSON.parse(full_response.strip)
-    return parsed_inner_json
+    # If we still have unmatched brackets, something went wrong
+    if bracket_count != 0
+      logger.error("Unmatched brackets in LLM response")
+    end
   rescue StandardError => e
     logger.error("Error querying LLM: #{e}")
-    { 'reasoning' => 'Error querying LLM.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad' => 'Error occurred during LLM query.' }
+    { 'reasoning' => 'Error querying LLM.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad': 'Error occurred during LLM query.' }
   end
 end
-
-
 
 # --- Prompt Building ---
 def build_prompt(mission, scratchpad, terminal_state)
   cursor_position = terminal_state[:cursor]
   terminal_content = terminal_state[:content]
 <<~PROMPT
-You are a helpful AI system designed to suggest key presses to accomplish a mission.
+You are a helpful AI system designed to suggest key presses to accomplish a mission on a console interface.
 
-You are being run iteratively to help a user achieve a specific task.
-
-On a single iteration, you are expected to make modest progress towards the mission.
-
-You have access to the current terminal state, the mission, and a scratchpad for notes.
-
-Scratchpad should serve as a place for your planning, reasoning, and tracking progress.
-
--------------------------------------------------------------------------------
 Mission:
--------------------------------------------------------------------------------
 #{mission}
--------------------------------------------------------------------------------
 
--------------------------------------------------------------------------------
 Instructions:
--------------------------------------------------------------------------------
-- Provide key presses using the following symbols:
-  - <Enter> for the Enter key
-  - <Tab> for the Tab key
-  - <Backspace> for the Backspace key
-  - <Space> for the Space key
-  - <Escape> for the Escape key
-  - <Up>, <Down>, <Left>, <Right> for arrow keys
-  - <Ctrl+X> for Control key combinations (e.g., Ctrl+X)
-  - <Alt+F> for Alt key combinations (e.g., Alt+F)
+- Provide key presses using symbols like <Enter>, <Tab>, <Backspace>, <Ctrl-X>, <Alt-F>, <Shift-A>, etc.
+- Format response in JSON:
+  {
+    "reasoning": "Explanation of your actions",
+    "keypresses": ["<Enter>", "v", "i", "m", "<Enter>", "i"],
+    "mission_complete": false,
+    "new_scratchpad": "Notes on what was done this step"
+  }
+- Focus on small, manageable steps.
+- Update the scratchpad with your planning, progress, and any issues encountered.
 
-Format your response in JSON
-
-Helpful tips:
-- Don't get ahead of yourself. Take it only a few steps at a time.
-- If you need to see the terminal state again, just refresh it.
-- Always thoroughly evaluate whether the mission is progressing as expected.
-- If you haven't already, map out a plan before executing keypresses.
-
--------------------------------------------------------------------------------
 Scratchpad:
--------------------------------------------------------------------------------
 #{scratchpad}
--------------------------------------------------------------------------------
 
--------------------------------------------------------------------------------
-Current Terminal State For Your Analysis:
--------------------------------------------------------------------------------
+Current Terminal State:
 #{terminal_content}
--------------------------------------------------------------------------------
 
-===============================================================================
-
-Example Response:
-
-response =
-{
-  "reasoning": "To create a new file, I need to open the editor, start inserting content...",
-  "keypresses": ["<Enter>", "v", "i", "m", "<Enter>", "i"],
-  "mission_complete": false,
-  "new_scratchpad": "Saved the file and exited the editor."
-}
-
-
-
-
-
-
-
-Your response:
-
-response =
+Please respond with only the JSON response structure.
 PROMPT
 end
 
@@ -227,40 +226,52 @@ begin
     prompt = build_prompt(MISSION, scratchpad, terminal_state)
     puts prompt
     logger.info("Sending prompt to LLM")
-    response = query_llm(LLAMA_API_ENDPOINT, prompt, logger)
 
-    begin      
-      unless valid_llm_response?(response)
-        logger.error("Invalid LLM response format: #{response}")
-        next
+    query_llm(LLAMA_API_ENDPOINT, prompt, logger) do |json_response|
+      begin
+        parsed_response = JSON.parse(json_response)
+        if valid_llm_response?(parsed_response)
+          reasoning = parsed_response['reasoning']
+          keypresses = parsed_response['keypresses'] || []
+          mission_complete = parsed_response['mission_complete']
+          new_scratchpad = parsed_response['new_scratchpad']
+
+          logger.info("LLM Reasoning: #{reasoning}")
+          logger.info("LLM Keypresses: #{keypresses.join(', ')}")
+          logger.info("Mission Complete? #{mission_complete}")
+
+          if keypresses.empty? && !mission_complete
+            logger.warn("No keypresses provided, skipping this iteration.")
+            return
+          end
+
+          # Update scratchpad
+          timestamp = Time.now.utc.iso8601
+          scratchpad += "\n[#{timestamp}] #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\n\n"
+
+          # Execute keypresses
+          unless keypresses.empty?
+            send_keys_to_tmux(session_name, keypresses, logger)
+            sleep(2)  # Allow some time for command execution
+
+            # Check if the terminal state has changed as expected after keypresses
+            new_state = capture_tmux_output(session_name)
+            logger.info("Post-Keypress Terminal State: #{new_state[:content][0..100]}...")
+
+            if !new_state[:content].include?("some expected text after progress")
+              logger.warn("Expected progress not detected, suggesting reattempt or manual intervention.")
+              # Here you might choose to either ask the LLM again or halt for manual intervention.
+            end
+          end
+
+          # Break the loop if mission_complete is true
+          break if mission_complete
+        else
+          logger.error("Invalid LLM response format: #{parsed_response}")
+        end
+      rescue JSON::ParserError => e
+        logger.error("Failed to parse LLM response: #{e.message}")
       end
-
-      # Extract fields from the response
-      reasoning = response['reasoning']
-      keypresses = response['keypresses'] || []
-      mission_complete = response['mission_complete']
-      new_scratchpad = response['new_scratchpad']
-
-      logger.info("LLM Reasoning: #{reasoning}")
-      logger.info("LLM Keypresses: #{keypresses.join(', ')}")
-      logger.info("Mission Complete? #{mission_complete}")
-
-      if keypresses.empty? && !mission_complete
-        logger.warn("No keypresses provided, requesting new response from LLM.")
-        next
-      end
-
-      # Update scratchpad
-      timestamp = Time.now.utc.iso8601
-      scratchpad += "\n[#{timestamp}] #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\n\n"
-
-      # Execute keypresses
-      send_keys_to_tmux(session_name, keypresses, logger) unless keypresses.empty?
-      sleep(2)  # Allow some time for command execution
-
-    rescue JSON::ParserError => e
-      logger.error("Failed to parse LLM response: #{e.message}")
-      next
     end
   end
 rescue Interrupt
