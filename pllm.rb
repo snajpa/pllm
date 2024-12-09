@@ -31,9 +31,37 @@ def create_tmux_session(session_name, logger)
 end
 
 def send_keys_to_tmux(session_name, keys)
-  puts "\nExecuting keypresses: #{keys.join(' ')}"
-  system("tmux send-keys -t #{session_name} #{keys.join(' ')}")
+  key_mappings = {
+    '<enter>' => 'Enter',
+    '<tab>' => 'Tab',
+    '<backspace>' => 'Backspace',
+    '<space>' => 'Space',
+    '<escape>' => 'Escape',
+    '<up>' => 'Up',
+    '<down>' => 'Down',
+    '<left>' => 'Left',
+    '<right>' => 'Right'
+  }
+
+  parsed_keys = keys.map do |key|
+    key = key.strip.downcase
+
+    if key =~ /^<ctrl\+([a-z])>$/
+      "\"C-#{$1}\""
+    elsif key =~ /^<alt\+([a-z])>$/
+      "\"M-#{$1}\""
+    elsif key_mappings.key?(key)
+      "\"#{key_mappings[key]}\""
+    else
+      logger.warn("Unknown keypress: #{key}")
+      "\"#{key}\""
+    end
+  end
+
+  puts "\nExecuting keypresses: #{parsed_keys.join(' ')}"
+  system("tmux send-keys -t #{session_name} #{parsed_keys.join(' ')}")
 end
+
 
 def capture_tmux_output(session_name)
   stdout, stderr, status = Open3.capture3("tmux capture-pane -pt #{session_name}")
@@ -54,55 +82,85 @@ def query_llm(endpoint, prompt, logger)
 
   begin
     response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
-    logger.info("LLM Response: #{response.body}")
-    JSON.parse(response.body)
+    logger.info("Raw LLM Response: #{response.body}")
+    parsed_response = JSON.parse(response.body)
+
+    # Extract the 'content' key safely
+    content = parsed_response['content'] || ''
+    JSON.parse(content)
   rescue JSON::ParserError => e
-    logger.error("Failed to parse LLM response: #{e}")
-    { 'reasoning' => 'Error parsing response.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad' => 'Error parsing response.' }
+    logger.error("Failed to parse LLM response content: #{e}")
+    {
+      'reasoning' => 'Error parsing response.',
+      'keypresses' => [],
+      'mission_complete' => false,
+      'new_scratchpad' => "Error parsing response. #{content}"
+    }
+  rescue StandardError => e
+    logger.error("Unexpected error: #{e}")
+    {
+      'reasoning' => 'Unexpected error occurred.',
+      'keypresses' => [],
+      'mission_complete' => false,
+      'new_scratchpad' => 'Unexpected error occurred.'
+    }
   end
 end
 
 # --- Prompt Building ---
 def build_prompt(mission, scratchpad, terminal_state)
-  <<~PROMPT
-    You are a helpful AI system designed to suggest key presses to accomplish a mission.
+<<~PROMPT
+You are a helpful AI system designed to suggest key presses to accomplish a mission.
 
-    Mission:
-    #{mission}
+-------------------------------------------------------------------------------
+Mission:
+-------------------------------------------------------------------------------
+#{mission}
+-------------------------------------------------------------------------------
 
-    Instructions:
-    - Provide key presses using the following symbols:
-      - <Enter> for the Enter key
-      - <Tab> for the Tab key
-      - <Backspace> for the Backspace key
-      - <Space> for the Space key
-      - <Escape> for the Escape key
-      - <Up>, <Down>, <Left>, <Right> for arrow keys
-      - <Ctrl+X> for Control key combinations (e.g., Ctrl+X)
-      - <Alt+F> for Alt key combinations (e.g., Alt+F)
+-------------------------------------------------------------------------------
+Instructions:
+-------------------------------------------------------------------------------
+- Provide key presses using the following symbols:
+  - <Enter> for the Enter key
+  - <Tab> for the Tab key
+  - <Backspace> for the Backspace key
+  - <Space> for the Space key
+  - <Escape> for the Escape key
+  - <Up>, <Down>, <Left>, <Right> for arrow keys
+  - <Ctrl+X> for Control key combinations (e.g., Ctrl+X)
+  - <Alt+F> for Alt key combinations (e.g., Alt+F)
 
-    Format your response in JSON with the following fields:
-    - "reasoning": Your thought process.
-    - "keypresses": An array of keypresses (e.g., ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"]).
-    - "mission_complete": true or false.
-    - "new_scratchpad": Updated notes for the next iteration.
+Format your response in JSON with the following fields:
+- "reasoning": Your thought process.
+- "keypresses": An array of keypresses (e.g., ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"]).
+- "mission_complete": true or false.
+- "new_scratchpad": Updated notes for the next iteration.
 
-    Example Response:
-    {
-      "reasoning": "To save the file and exit the editor, use Ctrl+O, Enter, and Ctrl+X.",
-      "keypresses": ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"],
-      "mission_complete": false,
-      "new_scratchpad": "Saved the file and exited the editor."
-    }
+-------------------------------------------------------------------------------
+Scratchpad:
+-------------------------------------------------------------------------------
+#{scratchpad}
+-------------------------------------------------------------------------------
 
-    Current State:
+-------------------------------------------------------------------------------
+Terminal State:
+-------------------------------------------------------------------------------
+#{terminal_state}
+-------------------------------------------------------------------------------
 
-    Scratchpad:
-    #{scratchpad}
+Example Response:
 
-    Terminal State:
-    #{terminal_state}
-  PROMPT
+response =
+{
+  "reasoning": "To save the file and exit the editor, use Ctrl+O, Enter, and Ctrl+X.",
+  "keypresses": ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"],
+  "mission_complete": false,
+  "new_scratchpad": "Saved the file and exited the editor."
+}
+
+response =
+PROMPT
 end
 
 # --- Main Execution Loop ---
@@ -118,6 +176,8 @@ begin
 
     response = query_llm(LLAMA_API_ENDPOINT, prompt, logger)
 
+    p response
+
     # Extract fields from the response
     reasoning = response['reasoning']
     keypresses = response['keypresses'] || []
@@ -125,14 +185,14 @@ begin
     new_scratchpad = response['new_scratchpad']
 
     # Debug output
-    puts "\n--- Reasoning ---\n#{reasoning}"
-    puts "\n--- Keypresses ---\n#{keypresses.join(', ')}"
-    puts "\n--- Mission Complete? ---\n#{mission_complete}"
-    puts "\n--- New Scratchpad ---\n#{new_scratchpad}"
+ #  puts "\n--- Reasoning ---\n#{reasoning}"
+ #  puts "\n--- Keypresses ---\n#{keypresses.join(', ')}"
+ #  puts "\n--- Mission Complete? ---\n#{mission_complete}"
+ #  puts "\n--- New Scratchpad ---\n#{new_scratchpad}"
 
     # Update scratchpad
     timestamp = Time.now.utc.iso8601
-    scratchpad += "\n[#{timestamp}] #{reasoning}\n#{new_scratchpad}"
+    scratchpad = "\n[#{timestamp}] #{new_scratchpad}"
 
     # Execute keypresses
     send_keys_to_tmux(session_name, keypresses) unless keypresses.empty?
