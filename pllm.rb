@@ -190,7 +190,7 @@ def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block
     end
   rescue StandardError => e
     logger.error("Error querying LLM: #{e}")
-    { 'reasoning' => 'Error querying LLM.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad': 'Error occurred during LLM query.' }
+    { 'reasoning' => 'Error querying LLM.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad' => 'Error occurred during LLM query.', 'next_step' => 'Reattempt or manual intervention required.' }
   end
 end
 
@@ -252,10 +252,10 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   response =
     {
       "reasoning": "I am suggesting these key presses to start a new bash session.",
-      "keypresses": ["<Enter>", "bash", "<Enter>"],
       "mission_complete": false,
-      "new_scratchpad": "Verify the new bash session is started successfully."
-      "next_step": "Work towards completing the mission. In any further iterations I intend to be more specific here."
+      "new_scratchpad": "Verify the new bash session is started successfully.",
+      "keypresses": ["<Enter>", "bash", "<Enter>"],
+      "next_step": "Work towards completing the mission. In any further iterations, I intend to be more specific here."
     }
   - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['command', '<Space>', 'parameters', '<Enter>']
   - Special keys and combinations should be enclosed in angle brackets. Example: ['<Ctrl-X>', '<Ctrl-S>']
@@ -268,10 +268,10 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   Scratchpad history (older entries are at the top, new entries at the bottom):
   ------------------------------------------------------------------------------------
   [2024-12-09T20:22:07Z] Cursor Position: (0, 0) - Verify the new bash session is started successfully.
-  Keypresses: <Enter>, bash, <Enter>
   Mission Complete: false
   Reasoning: I am suggesting these key presses to start a new bash session.
-  Next Step: Work towards completing the mission. In any further iterations I intend to be more specific here.
+  Keypresses: <Enter>, bash, <Enter>
+  Next Step: Work towards completing the mission. In any further iterations, I intend to be more specific here.
 
   #{scratchpad}
 
@@ -297,6 +297,7 @@ def valid_llm_response?(response)
     response.key?('keypresses') &&
     response.key?('mission_complete') &&
     response.key?('new_scratchpad') &&
+    response.key?('next_step') &&
     response['keypresses'].is_a?(Array)
 end
 
@@ -335,6 +336,7 @@ begin
           keypresses = parsed_response['keypresses'] || []
           mission_complete = parsed_response['mission_complete']
           new_scratchpad = parsed_response['new_scratchpad']
+          next_step = parsed_response['next_step']
 
           logger.info("LLM Reasoning: #{reasoning}")
           logger.info("LLM Keypresses: #{keypresses.join(', ')}")
@@ -348,7 +350,7 @@ begin
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}'.\n\n"
+          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nKeypresses: #{keypresses.join(', ')}\nNext Step: #{next_step}\n\n"
 
           # Execute keypresses
           unless keypresses.empty?
