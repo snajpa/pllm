@@ -120,7 +120,7 @@ end
 def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 500, repeat_penalty: 1.1, top_p: 0.94, top_k: 60, stream: true, temperature: 0.1 }.to_json
+  request.body = { prompt: prompt, max_tokens: 500, repeat_penalty: 1.1, top_p: 0.94, top_k: 60, stream: true, temperature: 0.5 }.to_json
 
   begin
     full_response = ""
@@ -219,28 +219,34 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   - On each step, create a plan to guide the user through the Mission and suggest the immediate next key presses.
   - Provide key presses using symbols like <Enter>, <Tab>, <Backspace>, <Ctrl-X>, <Alt-F>, <Shift-A>, etc.
   - Focus on small, manageable steps.
-  - Update the scratchpad with your planning, progress, and any issues encountered.
+  - The user doesn't mind if you use non-interactive commands to speed up the process.
+  - Update the scratchpad with your planning, progress, and any issues encountered. Never lose track of your progress and next steps.
   - Format response in JSON:
   response =
     {
       "keypresses": ["<Enter>", "bash", "<Enter>"],
       "mission_complete": false,
       "reasoning": "I am suggesting these key presses to start a new bash session.",
-      "new_scratchpad": "I should verify the bash session is started successfully, then analyze and proceed with the next steps."
+      "new_scratchpad": "I see a new fresh shell has started as I wanted. Next, I will [example cut]"
     }
-  - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['vim', '<Space>', 'prime_numbers.py', '<Enter>']
+  - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['command', '<Space>', 'parameters', '<Enter>']
+  - Special keys and combinations should be enclosed in angle brackets. Example: ['<Ctrl-X>', '<Ctrl-S>']
+  - Examples of valid keypresses: <Enter>, <Tab>, <Backspace>, <Space>, <Escape>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, <Insert>, <Delete>, <Ctrl-X>, <Alt-F>, <Shift-A>, command, filename, etc.
   -------------------------------------------------------------------------------
 
   -------------------------------------------------------------------------------
-  Scratchpad:
+  Scratchpad history (older entries are at the top, new entries at the bottom):
   -------------------------------------------------------------------------------
   #{scratchpad}
+
+  <new_scratchpad will be here with a timestamp and keypresses>
   -------------------------------------------------------------------------------
 
-  Don't forget to carefully evaluate the terminal state:
+  The current state of the terminal follows. Analyze the content and cursor position to provide the next key presses.
   
   -------------------------------------------------------------------------------
-  Terminal State:
+  Terminal Window (80x40)
+  Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})
   -------------------------------------------------------------------------------
   #{terminal_content}
   -------------------------------------------------------------------------------
@@ -270,7 +276,7 @@ OptionParser.new do |opts|
   end
 end.parse!
 
-scratchpad = "First iteration scratchpad. This is where you can keep track of your planning, progress, and any issues encountered. You now have a bash terminal open in a TMux session. You can interact with the terminal by sending key presses to the TMux session. The goal is to guide the user through the mission by suggesting key presses that will help them complete the task. You can also provide reasoning for your suggestions and update the scratchpad with your planning, progress, and any issues encountered."
+scratchpad = ""
 session_name = "pllm-#{SecureRandom.uuid}"
 mission_complete = false
 history = ""
