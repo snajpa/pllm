@@ -12,26 +12,7 @@ LLAMA_API_ENDPOINT = 'http://localhost:8080/v1/completions'
 MISSION = 'Write a Python script that calculates prime numbers up to 100.'
 LOG_FILE = 'pllm.log'
 
-# --- Logger Setup ---
-logger = Logger.new(LOG_FILE, 'daily')
-logger.level = Logger::DEBUG
-
-# --- Variables ---
-scratchpad = "First iteration scratchpad. This is where you can keep track of your planning, progress, and any issues encountered. You now have a bash terminal open in a TMux session. You can interact with the terminal by sending key presses to the TMux session. The goal is to guide the user through the mission by suggesting key presses that will help them complete the task. You can also provide reasoning for your suggestions and update the scratchpad with your planning, progress, and any issues encountered."
-session_name = "pllm-#{SecureRandom.uuid}"
-mission_complete = false
-history = ""
-
-# Command-line options
-options = {}
-OptionParser.new do |opts|
-  opts.banner = "Usage: ruby script.rb [options]"
-  opts.on("-a", "--accumulate", "Accumulate responses for subsequent prompts") do |a|
-    options[:accumulate] = a
-  end
-end.parse!
-
-# --- TMux Session Management ---
+# --- Helper Functions ---
 def create_tmux_session(session_name, logger)
   system("tmux new-session -d -s #{session_name} -n main")
   system("tmux set-option -t #{session_name} status off")
@@ -62,7 +43,7 @@ def send_keys_to_tmux(session_name, keys, logger)
 
   keys.each do |key|
     key = key.downcase.strip
-    
+
     if key.include?('<')
       parts = key.split('<')
       text = parts[0]
@@ -76,18 +57,20 @@ def send_keys_to_tmux(session_name, keys, logger)
         end
       end
 
+      # Handle special key or key combinations
       if key_mappings.key?(command)
         logger.info("Sending special key: #{key_mappings[command]}")
+        # Correctly send 'Enter' without modifying case
         system("tmux send-keys -t #{session_name} #{key_mappings[command]}")
-      elsif match = command.match(/^<(ctrl|c)-([a-z])>$/)
+      elsif match = command.match(/^<(ctrl|c)-([a-z0-9])>$/)
         modifier, char = match[1], match[2]
         logger.info("Sending Ctrl key: C-#{char}")
         system("tmux send-keys -t #{session_name} C-#{char}")
-      elsif match = command.match(/^<(alt|a|meta|m)-([a-z])>$/)
+      elsif match = command.match(/^<(alt|a|meta|m)-([a-z0-9])>$/)
         modifier, char = match[1], match[2]
         logger.info("Sending Alt key: M-#{char}")
         system("tmux send-keys -t #{session_name} M-#{char}")
-      elsif match = command.match(/^<(shift|s)-([a-z])>$/)
+      elsif match = command.match(/^<(shift|s)-([a-z0-9])>$/)
         modifier, char = match[1], match[2]
         logger.info("Sending Shift key: S-#{char}")
         system("tmux send-keys -t #{session_name} S-#{char}")
@@ -95,14 +78,10 @@ def send_keys_to_tmux(session_name, keys, logger)
         logger.warn("Unknown key command: #{command}")
       end
     else
-      # Send plain text character by character, but also add a space if needed
+      # Handle plain text
       logger.info("Sending plain text: #{key}")
       key.chars.each do |char|
         system("tmux send-keys -t #{session_name} \"#{char}\"")
-        # Add space after each word or if the character is not part of a word
-        if char == ' ' || key.index(char) == key.length - 1
-          system("tmux send-keys -t #{session_name} Space")
-        end
       end
     end
 
@@ -116,10 +95,21 @@ def capture_tmux_output(session_name)
   raise "TMux capture error: #{stderr}" unless status.success?
 
   # Normalize the terminal output to 80x40 characters
-  normalized_output = stdout.lines.map { |line| line.chomp.ljust(80)[0, 80] }
+  normalized_output = stdout.lines.map do |line|
+    line.chomp.ljust(80)[0, 80]
+  end
   normalized_output += Array.new(40 - normalized_output.size, ' ' * 80) if normalized_output.size < 40
 
-  { content: normalized_output.join("\n"), cursor: { x: 0, y: normalized_output.size - 1 } }
+  # Remove line numbers from nano editor if present
+  content_lines = normalized_output.map do |line|
+    # Regular expression to match line numbers at the start of a line
+    line.gsub(/^\d+\s+/, '').strip
+  end
+
+  { 
+    content: content_lines.join("\n"), 
+    cursor: { x: 0, y: content_lines.size - 1 } 
+  }
 end
 
 def cleanup_tmux_session(session_name, logger)
@@ -127,16 +117,15 @@ def cleanup_tmux_session(session_name, logger)
   logger.info("Killed TMux session #{session_name}")
 end
 
-def query_llm(endpoint, prompt, logger)
+def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 1024, stream: true }.to_json
+  request.body = { prompt: prompt, max_tokens: 500, repeat_penalty: 1.1, top_p: 0.94, top_k: 60, stream: true, temperature: 0.1 }.to_json
 
   begin
     full_response = ""
     bracket_count = 0
     current_json = ""
-    response = nil
 
     Net::HTTP.start(uri.hostname, uri.port) do |http|
       http.request(request) do |response|
@@ -161,9 +150,11 @@ def query_llm(endpoint, prompt, logger)
                     current_json += char
                     if bracket_count == 0 && !current_json.strip.empty?
                       # We have a complete JSON response, yield it and return
-                      yield current_json
+                      block.call(current_json)
                       if options[:accumulate]
-                        history += "Prompt:\n#{prompt}\nResponse:\n#{current_json}\n\n"
+                        history_limit = 10000  # Example limit in characters
+                        history << "Terminal state:\n#{terminal_state[:content]}\nResponse:\n#{current_json}\n\n"
+                        history = history[-history_limit..-1] if history.length > history_limit
                       end
                       return
                     end
@@ -190,19 +181,22 @@ def query_llm(endpoint, prompt, logger)
   end
 end
 
-def build_prompt(mission, scratchpad, terminal_state, history)
+def build_prompt(mission, scratchpad, terminal_state, history, options)
   cursor_position = terminal_state[:cursor]
   terminal_content = terminal_state[:content]
-  
   prompt = <<~PROMPT
   -------------------------------------------------------------------------------
   (history for context)
   -------------------------------------------------------------------------------
-
-  #{history}
+  #{options[:accumulate] ? history : ''}
 
   -------------------------------------------------------------------------------
   (end history)
+  -------------------------------------------------------------------------------
+  -------------------------------------------------------------------------------
+  -------------------------------------------------------------------------------
+
+
   -------------------------------------------------------------------------------
 
   You are a helpful AI system designed to suggest key presses to accomplish a mission on a console interface.
@@ -232,9 +226,9 @@ def build_prompt(mission, scratchpad, terminal_state, history)
       "keypresses": ["<Enter>", "bash", "<Enter>"],
       "mission_complete": false,
       "reasoning": "I am suggesting these key presses to start a new bash session.",
-      "new_scratchpad": "Should verify the bash session is started successfully, then proceed with the next steps."
+      "new_scratchpad": "I should verify the bash session is started successfully, then analyze and proceed with the next steps."
     }
-  - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['nano', '<Space>', 'prime_numbers.py', '<Enter>']
+  - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['vim', '<Space>', 'prime_numbers.py', '<Enter>']
   -------------------------------------------------------------------------------
 
   -------------------------------------------------------------------------------
@@ -243,6 +237,8 @@ def build_prompt(mission, scratchpad, terminal_state, history)
   #{scratchpad}
   -------------------------------------------------------------------------------
 
+  Don't forget to carefully evaluate the terminal state:
+  
   -------------------------------------------------------------------------------
   Terminal State:
   -------------------------------------------------------------------------------
@@ -262,18 +258,34 @@ def valid_llm_response?(response)
     response['keypresses'].is_a?(Array)
 end
 
-# Main Execution
+# --- Main Execution ---
+logger = Logger.new(LOG_FILE, 'daily')
+logger.level = Logger::DEBUG
+
+options = {}
+OptionParser.new do |opts|
+  opts.banner = "Usage: ruby script.rb [options]"
+  opts.on("-a", "--accumulate", "Accumulate responses for subsequent prompts") do |a|
+    options[:accumulate] = a
+  end
+end.parse!
+
+scratchpad = "First iteration scratchpad. This is where you can keep track of your planning, progress, and any issues encountered. You now have a bash terminal open in a TMux session. You can interact with the terminal by sending key presses to the TMux session. The goal is to guide the user through the mission by suggesting key presses that will help them complete the task. You can also provide reasoning for your suggestions and update the scratchpad with your planning, progress, and any issues encountered."
+session_name = "pllm-#{SecureRandom.uuid}"
+mission_complete = false
+history = ""
+
 begin
   create_tmux_session(session_name, logger)
 
   until mission_complete
     terminal_state = capture_tmux_output(session_name)
-    prompt = build_prompt(MISSION, scratchpad, terminal_state, history)
+    prompt = build_prompt(MISSION, scratchpad, terminal_state, history, options)
     system("clear")
     puts prompt
     logger.info("Sending prompt to LLM")
 
-    query_llm(LLAMA_API_ENDPOINT, prompt, logger) do |json_response|
+    query_llm(LLAMA_API_ENDPOINT, prompt, history, terminal_state, options, logger) do |json_response|
       begin
         parsed_response = JSON.parse(json_response)
         if valid_llm_response?(parsed_response)
@@ -288,7 +300,7 @@ begin
 
           if keypresses.empty? && !mission_complete
             logger.warn("No keypresses provided, skipping this iteration.")
-            return
+            next
           end
 
           # Update scratchpad
@@ -311,7 +323,9 @@ begin
           end
 
           # Break the loop if mission_complete is true
-          break if mission_complete
+          if mission_complete
+            break
+          end
         else
           logger.error("Invalid LLM response format: #{parsed_response}")
         end
