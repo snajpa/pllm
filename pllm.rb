@@ -43,30 +43,50 @@ def send_keys_to_tmux(session_name, keys)
     '<right>' => 'Right'
   }
 
-  parsed_keys = keys.map do |key|
-    key = key.strip.downcase
+  keys.each do |key|
+    key = key.strip
 
-    if key =~ /^<ctrl\+([a-z])>$/
-      "\"C-#{$1}\""
-    elsif key =~ /^<alt\+([a-z])>$/
-      "\"M-#{$1}\""
-    elsif key_mappings.key?(key)
-      "\"#{key_mappings[key]}\""
+    if key =~ /^<ctrl\+([a-z])>$/i
+      system("tmux send-keys -t #{session_name} C-#{$1.downcase}")
+    elsif key =~ /^<alt\+([a-z])>$/i
+      system("tmux send-keys -t #{session_name} M-#{$1.downcase}")
+    elsif key_mappings.key?(key.downcase)
+      system("tmux send-keys -t #{session_name} #{key_mappings[key.downcase]}")
     else
-      logger.warn("Unknown keypress: #{key}")
-      "\"#{key}\""
+      # Send plain text one character at a time
+      key.chars.each do |char|
+        system("tmux send-keys -t #{session_name} \"#{char}\"")
+        sleep(0.05) # Small delay to ensure each character is sent properly
+      end
     end
+    sleep(0.1) # Small delay between keypresses
   end
-
-  puts "\nExecuting keypresses: #{parsed_keys.join(' ')}"
-  system("tmux send-keys -t #{session_name} #{parsed_keys.join(' ')}")
 end
 
-
 def capture_tmux_output(session_name)
+  # Capture the terminal content
   stdout, stderr, status = Open3.capture3("tmux capture-pane -pt #{session_name}")
   raise "TMux capture error: #{stderr}" unless status.success?
-  stdout.strip
+
+  # Normalize the terminal output to 80x40 characters
+  normalized_output = stdout.lines.map { |line| line.chomp.ljust(80)[0, 80] }
+  normalized_output += Array.new(40 - normalized_output.size, ' ' * 80) if normalized_output.size < 40
+
+  # Fetch the cursor position from TMux
+  cursor_position_output, stderr, status = Open3.capture3("tmux display-message -p -t #{session_name} '#{session_name}:#{session_name}'")
+  raise "TMux cursor position error: #{stderr}" unless status.success?
+
+  # Parse cursor position from the output
+  cursor_match = cursor_position_output.match(/cursor: \{(\d+),(\d+)\}/)
+  if cursor_match
+    row = cursor_match[1].to_i
+    col = cursor_match[2].to_i
+    cursor_position = { row: row, col: col }
+  else
+    cursor_position = { row: nil, col: nil }
+  end
+
+  { content: normalized_output.join("\n"), cursor: cursor_position }
 end
 
 def cleanup_tmux_session(session_name, logger)
@@ -78,7 +98,7 @@ end
 def query_llm(endpoint, prompt, logger)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 256 }.to_json
+  request.body = { prompt: prompt, max_tokens: 768 }.to_json
 
   begin
     response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
@@ -109,6 +129,8 @@ end
 
 # --- Prompt Building ---
 def build_prompt(mission, scratchpad, terminal_state)
+  cursor_position = terminal_state[:cursor]
+  terminal_content = terminal_state[:content]
 <<~PROMPT
 You are a helpful AI system designed to suggest key presses to accomplish a mission.
 
@@ -144,9 +166,10 @@ Scratchpad:
 -------------------------------------------------------------------------------
 
 -------------------------------------------------------------------------------
+Cursor Position: #{cursor_position}
 Terminal State:
 -------------------------------------------------------------------------------
-#{terminal_state}
+#{terminal_content}
 -------------------------------------------------------------------------------
 
 Example Response:
@@ -154,7 +177,7 @@ Example Response:
 response =
 {
   "reasoning": "To save the file and exit the editor, use Ctrl+O, Enter, and Ctrl+X.",
-  "keypresses": ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"],
+  "keypresses": ["<Enter>", "vim", "<Enter>", "i", "Content", "<Esc>", ":wq", "<Enter>"],
   "mission_complete": false,
   "new_scratchpad": "Saved the file and exited the editor."
 }
@@ -169,8 +192,9 @@ create_tmux_session(session_name, logger)
 begin
   until mission_complete
     terminal_state = capture_tmux_output(session_name)
-    puts "\n--- Captured Terminal State ---\n#{terminal_state}"
-
+    terminal_content = terminal_state[:content]
+    cursor_position = terminal_state[:cursor]
+  
     prompt = build_prompt(MISSION, scratchpad, terminal_state)
     puts "\n--- Prompt Sent to LLM ---\n#{prompt}"
 
