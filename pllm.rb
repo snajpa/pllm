@@ -45,35 +45,26 @@ def send_keys_to_tmux(session_name, keys, logger)
     key = key.downcase
     
     if key_mappings.key?(key)
-      # For special keys, including <space>
       system("tmux send-keys -t #{session_name} \"#{key_mappings[key]}\"")
       logger.info("Sending special key: #{key}")
     elsif key.match?(/^<(ctrl|c)-([a-z0-9])>$/)
-      modifier, char = key.split('-')[0], key.split('-')[1]
+      _, char = key.split('-')
       system("tmux send-keys -t #{session_name} C-#{char}")
       logger.info("Sending Ctrl key: C-#{char}")
     elsif key.match?(/^<(alt|a|meta|m)-([a-z0-9])>$/)
-      modifier, char = key.split('-')[0], key.split('-')[1]
+      _, char = key.split('-')
       system("tmux send-keys -t #{session_name} M-#{char}")
       logger.info("Sending Alt/Meta key: M-#{char}")
     elsif key.match?(/^<(shift|s)-([a-z0-9])>$/)
-      modifier, char = key.split('-')[0], key.split('-')[1]
+      _, char = key.split('-')
       system("tmux send-keys -t #{session_name} S-#{char}")
       logger.info("Sending Shift key: S-#{char}")
     else
       # Handle plain text or commands, ensuring special characters are properly escaped
       key.chars.each do |char|
         case char
-        when '"'
-          system("tmux send-keys -t #{session_name} \\\"")
-        when '\''
-          system("tmux send-keys -t #{session_name} \\\'")
-        when '$'
-          system("tmux send-keys -t #{session_name} \\$")
-        when '`'
-          system("tmux send-keys -t #{session_name} \\`")
-        when '\\'
-          system("tmux send-keys -t #{session_name} \\\\")
+        when '"', '\'', '$', '`', '\\'
+          system("tmux send-keys -t #{session_name} \\\#{char}")
         else
           system("tmux send-keys -t #{session_name} \"#{char}\"")
         end
@@ -257,7 +248,7 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   - Note: Be careful with the white-spaces. Example: ["command", "<Space>", "-p", <Space>", "value", "<Enter>"]
   - Special keys and combinations should be enclosed in angle brackets. Example: ["<Ctrl-X>", "<Ctrl-S>"]
   - Examples of valid keypresses: ["<Enter>", "ls", "<Enter>"], ["<Ctrl-X>", "<Ctrl-S>"], ["echo 'Hello World'", "<Enter>"]
-  - If there's an error like "command not found," guide towards correcting the command rather than repeating the mistake.
+  - Check if you're not stuck, clear the screen and start over if needed.
   - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
   ------------------------------------------------------------------------------------
 
