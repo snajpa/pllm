@@ -107,7 +107,7 @@ def capture_tmux_output(session_name)
   content_lines = normalized_output.map.with_index do |line, idx|
     line_with_number = "#{idx.to_s.rjust(4)} #{line}"
     if idx == cursor_position[:y]
-      line_with_number[cursor_position[:x] + 5] = '█'  # +3 to account for line number and space
+      line_with_number[cursor_position[:x] + 5] = '█'  # +5 to account for line number and spaces
     end
     line_with_number
   end
@@ -327,9 +327,10 @@ begin
             next
           end
 
-          # Update scratchpad
+          # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
-          scratchpad += "\n[#{timestamp}] #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\n\n"
+          cursor_position = terminal_state[:cursor]
+          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\n\n"
 
           # Execute keypresses
           unless keypresses.empty?
