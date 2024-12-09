@@ -27,7 +27,7 @@ def send_keys_to_tmux(session_name, keys, logger)
     '<enter>' => 'Enter',
     '<tab>' => 'Tab',
     '<backspace>' => 'BSpace',
-    '<space>' => 'Space',
+    '<space>' => ' ',  # Direct space character
     '<escape>' => 'Escape',
     '<up>' => 'Up',
     '<down>' => 'Down',
@@ -42,47 +42,43 @@ def send_keys_to_tmux(session_name, keys, logger)
   }
 
   keys.each do |key|
-    key = key.downcase.strip
-
-    if key.include?('<')
-      parts = key.split('<')
-      text = parts[0]
-      command = "<#{parts[1]}"
-
-      # Send text before the special key if it exists
-      unless text.empty?
-        logger.info("Sending plain text: #{text}")
-        text.chars.each do |char|
+    key = key.downcase
+    
+    if key_mappings.key?(key)
+      # For special keys, including <space>
+      system("tmux send-keys -t #{session_name} \"#{key_mappings[key]}\"")
+      logger.info("Sending special key: #{key}")
+    elsif key.match?(/^<(ctrl|c)-([a-z0-9])>$/)
+      modifier, char = key.split('-')[0], key.split('-')[1]
+      system("tmux send-keys -t #{session_name} C-#{char}")
+      logger.info("Sending Ctrl key: C-#{char}")
+    elsif key.match?(/^<(alt|a|meta|m)-([a-z0-9])>$/)
+      modifier, char = key.split('-')[0], key.split('-')[1]
+      system("tmux send-keys -t #{session_name} M-#{char}")
+      logger.info("Sending Alt/Meta key: M-#{char}")
+    elsif key.match?(/^<(shift|s)-([a-z0-9])>$/)
+      modifier, char = key.split('-')[0], key.split('-')[1]
+      system("tmux send-keys -t #{session_name} S-#{char}")
+      logger.info("Sending Shift key: S-#{char}")
+    else
+      # Handle plain text or commands, ensuring special characters are properly escaped
+      key.chars.each do |char|
+        case char
+        when '"'
+          system("tmux send-keys -t #{session_name} \\\"")
+        when '\''
+          system("tmux send-keys -t #{session_name} \\\'")
+        when '$'
+          system("tmux send-keys -t #{session_name} \\$")
+        when '`'
+          system("tmux send-keys -t #{session_name} \\`")
+        when '\\'
+          system("tmux send-keys -t #{session_name} \\\\")
+        else
           system("tmux send-keys -t #{session_name} \"#{char}\"")
         end
       end
-
-      # Handle special key or key combinations
-      if key_mappings.key?(command)
-        logger.info("Sending special key: #{key_mappings[command]}")
-        # Correctly send 'Enter' without modifying case
-        system("tmux send-keys -t #{session_name} #{key_mappings[command]}")
-      elsif match = command.match(/^<(ctrl|c)-([a-z0-9])>$/)
-        modifier, char = match[1], match[2]
-        logger.info("Sending Ctrl key: C-#{char}")
-        system("tmux send-keys -t #{session_name} C-#{char}")
-      elsif match = command.match(/^<(alt|a|meta|m)-([a-z0-9])>$/)
-        modifier, char = match[1], match[2]
-        logger.info("Sending Alt key: M-#{char}")
-        system("tmux send-keys -t #{session_name} M-#{char}")
-      elsif match = command.match(/^<(shift|s)-([a-z0-9])>$/)
-        modifier, char = match[1], match[2]
-        logger.info("Sending Shift key: S-#{char}")
-        system("tmux send-keys -t #{session_name} S-#{char}")
-      else
-        logger.warn("Unknown key command: #{command}")
-      end
-    else
-      # Handle plain text
-      logger.info("Sending plain text: #{key}")
-      key.chars.each do |char|
-        system("tmux send-keys -t #{session_name} \"#{char}\"")
-      end
+      logger.info("Sending plain text or command: #{key}")
     end
 
     sleep(0.1)  # Small delay between key presses
@@ -133,7 +129,7 @@ end
 def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 500, repeat_penalty: 1.1, top_p: 0.94, top_k: 60, stream: true, temperature: 0.5 }.to_json
+  request.body = { prompt: prompt, max_tokens: 500, repeat_penalty: 1.1, top_p: 0.98, top_k: 30, stream: true, temperature: 0.8 }.to_json
 
   begin
     full_response = ""
@@ -247,6 +243,7 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   - Provide key presses using symbols like <Enter>, <Tab>, <Backspace>, <Ctrl-X>, <Alt-F>, <Shift-A>, etc.
   - Focus on small, manageable steps.
   - The user doesn't mind if you use non-interactive commands to speed up the process.
+  - The user has no understanding of the mission and is relying on your guidance.
   - Update the scratchpad with your planning, progress, and any issues encountered. Never lose track of your progress and next steps.
   - Format response in JSON:
   response =
@@ -255,11 +252,11 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
       "mission_complete": false,
       "new_scratchpad": "Verify the new bash session is started successfully.",
       "keypresses": ["<Enter>", "bash", "<Enter>"],
-      "next_step": "Work towards completing the mission. In any further iterations, I intend to be more specific here."
+      "next_step": "see below",
     }
-  - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['command', '<Space>', 'parameters', '<Enter>']
-  - Special keys and combinations should be enclosed in angle brackets. Example: ['<Ctrl-X>', '<Ctrl-S>']
-  - Examples of valid keypresses: <Enter>, <Tab>, <Backspace>, <Space>, <Escape>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, <Insert>, <Delete>, <Ctrl-X>, <Alt-F>, <Shift-A>, command, filename, etc.
+  - Note: Be careful with the white-spaces. Example: ["command", "<Space>", "-p", <Space>", "value", "<Enter>"]
+  - Special keys and combinations should be enclosed in angle brackets. Example: ["<Ctrl-X>", "<Ctrl-S>"]
+  - Examples of valid keypresses: ["<Enter>", "ls", "<Enter>"], ["<Ctrl-X>", "<Ctrl-S>"], ["echo 'Hello World'", "<Enter>"]
   - If there's an error like "command not found," guide towards correcting the command rather than repeating the mistake.
   - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
   ------------------------------------------------------------------------------------
@@ -271,10 +268,9 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   Mission Complete: false
   Reasoning: I am suggesting these key presses to start a new bash session.
   Keypresses: <Enter>, bash, <Enter>
-  Next Step: Work towards completing the mission. In any further iterations, I intend to be more specific here.
+  Next Step: (...Note to the model: Next Step of a mission would be here but since this was actually run before the zeroth iteration, it is left out...)
 
   #{scratchpad}
-
   <new_scratchpad will be here>
   ------------------------------------------------------------------------------------
 
@@ -350,7 +346,7 @@ begin
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nKeypresses: #{keypresses.join(', ')}\nNext Step: #{next_step}\n\n"
+          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
 
           # Execute keypresses
           unless keypresses.empty?
