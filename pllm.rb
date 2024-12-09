@@ -9,7 +9,7 @@ require 'optparse'
 
 # --- Constants ---
 LLAMA_API_ENDPOINT = 'http://localhost:8080/v1/completions'
-MISSION = 'Write a Ruby script that calculates prime numbers up to 100.'
+MISSION = 'Write a Ruby script in a file named "prime_numbers.rb" that calculates prime numbers up to 100.'
 LOG_FILE = 'pllm.log'
 
 # --- Helper Functions ---
@@ -197,15 +197,23 @@ end
 def build_prompt(mission, scratchpad, terminal_state, history, options)
   cursor_position = terminal_state[:cursor]
   terminal_content = terminal_state[:content]
-  prompt = <<~PROMPT
-  ------------------------------------------------------------------------------------
-  (history for context)
-  ------------------------------------------------------------------------------------
-  #{options[:accumulate] ? history : ''}
+  history_section = if options[:accumulate]
+    <<~HISTORY
+    ------------------------------------------------------------------------------------
+    (history for context)
+    ------------------------------------------------------------------------------------
+    #{history}
 
-  ------------------------------------------------------------------------------------
-  (end history)
-  ------------------------------------------------------------------------------------
+    ------------------------------------------------------------------------------------
+    (end history)
+    ------------------------------------------------------------------------------------
+    HISTORY
+  else
+    ''
+  end
+  
+  prompt = <<~PROMPT
+  #{history_section}
   ------------------------------------------------------------------------------------
   ------------------------------------------------------------------------------------
 
@@ -223,6 +231,7 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   Note: 
   - The terminal output has been prepended with line numbers by the system to help track position. These are not part of the actual terminal content.
   - The block symbol '█' indicates the current cursor position.
+  - The file 'prime_numbers.rb' has been created. Now, we need to write the Ruby code inside this file.
 
   ------------------------------------------------------------------------------------
   Mission:
@@ -242,22 +251,31 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   - Format response in JSON:
   response =
     {
+      "reasoning": "I am suggesting these key presses to start a new bash session.",
       "keypresses": ["<Enter>", "bash", "<Enter>"],
       "mission_complete": false,
-      "reasoning": "I am suggesting these key presses to start a new bash session.",
-      "new_scratchpad": "I see a new fresh shell has started as I wanted. Next, I will [example cut]"
+      "new_scratchpad": "Verify the new bash session is started successfully."
+      "next_step": "Work towards completing the mission. In any further iterations I intend to be more specific here."
     }
   - Note: Always include spaces between commands and filenames or between filenames and special keys. Example: ['command', '<Space>', 'parameters', '<Enter>']
   - Special keys and combinations should be enclosed in angle brackets. Example: ['<Ctrl-X>', '<Ctrl-S>']
   - Examples of valid keypresses: <Enter>, <Tab>, <Backspace>, <Space>, <Escape>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, <Insert>, <Delete>, <Ctrl-X>, <Alt-F>, <Shift-A>, command, filename, etc.
+  - If there's an error like "command not found," guide towards correcting the command rather than repeating the mistake.
+  - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
   ------------------------------------------------------------------------------------
 
   ------------------------------------------------------------------------------------
   Scratchpad history (older entries are at the top, new entries at the bottom):
   ------------------------------------------------------------------------------------
+  [2024-12-09T20:22:07Z] Cursor Position: (0, 0) - Verify the new bash session is started successfully.
+  Keypresses: <Enter>, bash, <Enter>
+  Mission Complete: false
+  Reasoning: I am suggesting these key presses to start a new bash session.
+  Next Step: Work towards completing the mission. In any further iterations I intend to be more specific here.
+
   #{scratchpad}
 
-  <new_scratchpad will be here with a timestamp and keypresses>
+  <new_scratchpad will be here>
   ------------------------------------------------------------------------------------
 
   The current state of the terminal follows. Analyze the content and cursor position to provide the next key presses.
@@ -330,7 +348,7 @@ begin
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\n\n"
+          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}'.\n\n"
 
           # Execute keypresses
           unless keypresses.empty?
