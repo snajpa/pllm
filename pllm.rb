@@ -106,10 +106,20 @@ def capture_tmux_output(session_name)
     line.gsub(/^\d+\s+/, '').strip
   end
 
+  # Get cursor position
+  cursor_position = get_cursor_position(session_name)
+
   { 
     content: content_lines.join("\n"), 
-    cursor: { x: 0, y: content_lines.size - 1 } 
+    cursor: cursor_position 
   }
+end
+
+def get_cursor_position(session_name)
+  stdout, stderr, status = Open3.capture3("tmux display-message -p -t #{session_name}:0 '\#{cursor_x},\#{cursor_y}'")
+  raise "Cursor position retrieval error: #{stderr}" unless status.success?
+  x, y = stdout.split(',').map(&:to_i)
+  { x: x, y: y }
 end
 
 def cleanup_tmux_session(session_name, logger)
