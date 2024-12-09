@@ -2,9 +2,9 @@ require 'securerandom'
 require 'net/http'
 require 'uri'
 require 'json'
-require 'logger'
 require 'open3'
 require 'time'
+require 'logger'
 
 # --- Constants ---
 LLAMA_API_ENDPOINT = 'http://localhost:8080/v1/completions'
@@ -15,207 +15,131 @@ LOG_FILE = 'pllm.log'
 logger = Logger.new(LOG_FILE, 'daily')
 logger.level = Logger::DEBUG
 
-# --- Classes ---
+# --- Variables ---
+scratchpad = "First iteration"
+session_name = "pllm-#{SecureRandom.uuid}"
+mission_complete = false
 
-# Manages the TMux session
-class SessionManager
-  attr_reader :session_name
-
-  def initialize(logger)
-    @logger = logger
-    @session_name = "pllm-#{SecureRandom.uuid}"
-    create_session
-  end
-
-  def create_session
-    system("tmux new-session -d -s #{@session_name} -n main")
-    system("tmux set-option -t #{@session_name} status off")
-    system("tmux resize-pane -t #{@session_name} -x 80 -y 40")
-    @logger.info("Created TMux session #{@session_name} with window size 80x40")
-  rescue StandardError => e
-    @logger.error("Failed to create TMux session: #{e}")
-  end  
-
-  def send_keys(keys)
-    parsed_keys = parse_key_sequence(keys)
-    system("tmux send-keys -t #{@session_name} #{parsed_keys}")
-  end
-
-  def parse_key_sequence(keys)
-    key_mappings = {
-      'Enter' => 'Enter',
-      'Tab' => 'Tab',
-      'Backspace' => 'Backspace',
-      'Space' => 'Space',
-      'Escape' => 'Escape',
-      'Up' => 'Up',
-      'Down' => 'Down',
-      'Left' => 'Left',
-      'Right' => 'Right'
-    }
-
-    keys.map do |key|
-      key.strip!
-
-      # Handle Ctrl+<letter> or Alt+<letter> sequences
-      if key =~ /^Ctrl\+([A-Za-z])$/
-        "\"C-#{$1.downcase}\""
-      elsif key =~ /^Alt\+([A-Za-z])$/
-        "\"M-#{$1.downcase}\""
-      elsif key_mappings.key?(key)
-        "\"#{key_mappings[key]}\""
-      else
-        "\"#{key}\""
-      end
-    end.join(' ')
-  end
-
-  def capture_output
-    stdout, stderr, status = Open3.capture3("tmux capture-pane -pt #{@session_name}")
-    raise "TMux capture error: #{stderr}" unless status.success?
-    stdout
-  end
-
-  def cleanup
-    system("tmux kill-session -t #{@session_name}")
-    @logger.info("Killed TMux session #{@session_name}")
-  end
+# --- TMux Session Management ---
+def create_tmux_session(session_name, logger)
+  system("tmux new-session -d -s #{session_name} -n main")
+  system("tmux set-option -t #{session_name} status off")
+  system("tmux resize-pane -t #{session_name} -x 80 -y 40")
+  logger.info("Created TMux session #{session_name} with window size 80x40")
+  system("tmux send-keys -t #{session_name} 'clear' Enter")
+  sleep(1) # Give time for the shell to initialize
 end
 
-# Manages the scratchpad state
-class Scratchpad
-  attr_reader :content
-
-  def initialize
-    @content = "First iteration"
-  end
-
-  def update(reasoning, new_content)
-    timestamp = Time.now.utc.iso8601
-    @content += "\n[#{timestamp}] #{reasoning}\n#{new_content}"
-  end
-
-  def to_s
-    @content
-  end
+def send_keys_to_tmux(session_name, keys)
+  puts "\nExecuting keypresses: #{keys.join(' ')}"
+  system("tmux send-keys -t #{session_name} #{keys.join(' ')}")
 end
 
-# Handles communication with the LLM API
-class LLMClient
-  def initialize(endpoint, logger)
-    @endpoint = endpoint
-    @logger = logger
-  end
+def capture_tmux_output(session_name)
+  stdout, stderr, status = Open3.capture3("tmux capture-pane -pt #{session_name}")
+  raise "TMux capture error: #{stderr}" unless status.success?
+  stdout.strip
+end
 
-  def query(prompt)
-    uri = URI.parse(@endpoint)
-    request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-    request.body = { prompt: prompt, max_tokens: 256 }.to_json
+def cleanup_tmux_session(session_name, logger)
+  system("tmux kill-session -t #{session_name}")
+  logger.info("Killed TMux session #{session_name}")
+end
 
+# --- LLM Interaction ---
+def query_llm(endpoint, prompt, logger)
+  uri = URI.parse(endpoint)
+  request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
+  request.body = { prompt: prompt, max_tokens: 256 }.to_json
+
+  begin
     response = Net::HTTP.start(uri.hostname, uri.port) { |http| http.request(request) }
+    logger.info("LLM Response: #{response.body}")
     JSON.parse(response.body)
   rescue JSON::ParserError => e
-    @logger.error("Failed to parse LLM response: #{e}")
+    logger.error("Failed to parse LLM response: #{e}")
     { 'reasoning' => 'Error parsing response.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad' => 'Error parsing response.' }
   end
 end
 
-# Main controller
-class PLLMController
-  def initialize(logger)
-    @logger = logger
-    @session_manager = SessionManager.new(logger)
-    @scratchpad = Scratchpad.new
-    @llm_client = LLMClient.new(LLAMA_API_ENDPOINT, logger)
-    @mission_complete = false
-  end
+# --- Prompt Building ---
+def build_prompt(mission, scratchpad, terminal_state)
+  <<~PROMPT
+    You are a helpful AI system designed to suggest key presses to accomplish a mission.
 
-  def run
-    while !@mission_complete
-      terminal_state = @session_manager.capture_output
-      prompt = build_prompt(terminal_state)
-      response = @llm_client.query(prompt)
-      process_response(response)
-    end
-    @session_manager.cleanup
-  rescue Interrupt
-    puts "\nInterrupted. Cleaning up..."
-    @session_manager.cleanup
-  end
+    Mission:
+    #{mission}
 
-  private
+    Instructions:
+    - Provide key presses using the following symbols:
+      - <Enter> for the Enter key
+      - <Tab> for the Tab key
+      - <Backspace> for the Backspace key
+      - <Space> for the Space key
+      - <Escape> for the Escape key
+      - <Up>, <Down>, <Left>, <Right> for arrow keys
+      - <Ctrl+X> for Control key combinations (e.g., Ctrl+X)
+      - <Alt+F> for Alt key combinations (e.g., Alt+F)
 
-  def build_prompt(terminal_state)
-<<~PROMPT
-You are a helpful software system designed to suggest key presses to accomplish the given mission.
+    Format your response in JSON with the following fields:
+    - "reasoning": Your thought process.
+    - "keypresses": An array of keypresses (e.g., ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"]).
+    - "mission_complete": true or false.
+    - "new_scratchpad": Updated notes for the next iteration.
 
-You are being run iteratively to complete a mission.
+    Example Response:
+    {
+      "reasoning": "To save the file and exit the editor, use Ctrl+O, Enter, and Ctrl+X.",
+      "keypresses": ["<Ctrl+O>", "<Enter>", "<Ctrl+X>"],
+      "mission_complete": false,
+      "new_scratchpad": "Saved the file and exited the editor."
+    }
 
-Every iteration, you receive:
-- the mission statement
-- the current state of the terminal
-- the scratchpad from the previous iteration
+    Current State:
 
-You can provide reasoning, a set of key presses, and a new scratchpad message to achieve the mission.
+    Scratchpad:
+    #{scratchpad}
 
-Special key format:
-- Use 'Ctrl+<letter>' for Control key combinations (e.g., 'Ctrl+C')
-- Use 'Alt+<letter>' for Alt key combinations (e.g., 'Alt+F')
-- Special keys: 'Enter', 'Tab', 'Backspace', 'Space', 'Escape', 'Up', 'Down', 'Left', 'Right'
+    Terminal State:
+    #{terminal_state}
+  PROMPT
+end
 
-Return your response in the following JSON format:
+# --- Main Execution Loop ---
+create_tmux_session(session_name, logger)
 
-{
-  "reasoning": "Explain your thought process here.",
-  "keypresses": ["Enter", "Ctrl+S", "Ctrl+X"],
-  "mission_complete": false,
-  "new_scratchpad": "Add any notes or context for the next iteration."
-}
+begin
+  until mission_complete
+    terminal_state = capture_tmux_output(session_name)
+    puts "\n--- Captured Terminal State ---\n#{terminal_state}"
 
--------------------------------------------------------------------------------
-Mission statement
--------------------------------------------------------------------------------
-#{MISSION}
--------------------------------------------------------------------------------
+    prompt = build_prompt(MISSION, scratchpad, terminal_state)
+    puts "\n--- Prompt Sent to LLM ---\n#{prompt}"
 
--------------------------------------------------------------------------------
-Scratchpad:
--------------------------------------------------------------------------------
-#{@scratchpad}
--------------------------------------------------------------------------------
-
--------------------------------------------------------------------------------
-Terminal State:
--------------------------------------------------------------------------------
-#{terminal_state}
--------------------------------------------------------------------------------
-PROMPT
-  end
-
-  def process_response(response)
-    # Output the prompt and the raw response for transparency
-    puts "\n--- Raw Response from LLM ---"
-    puts response.to_json
+    response = query_llm(LLAMA_API_ENDPOINT, prompt, logger)
 
     # Extract fields from the response
     reasoning = response['reasoning']
     keypresses = response['keypresses'] || []
-    @mission_complete = response['mission_complete']
+    mission_complete = response['mission_complete']
     new_scratchpad = response['new_scratchpad']
 
-    @logger.info("Reasoning: #{reasoning}")
-    @logger.info("New Scratchpad: #{new_scratchpad}")
-    @scratchpad.update(reasoning, new_scratchpad)
+    # Debug output
+    puts "\n--- Reasoning ---\n#{reasoning}"
+    puts "\n--- Keypresses ---\n#{keypresses.join(', ')}"
+    puts "\n--- Mission Complete? ---\n#{mission_complete}"
+    puts "\n--- New Scratchpad ---\n#{new_scratchpad}"
+
+    # Update scratchpad
+    timestamp = Time.now.utc.iso8601
+    scratchpad += "\n[#{timestamp}] #{reasoning}\n#{new_scratchpad}"
 
     # Execute keypresses
-    unless keypresses.empty?
-      @logger.info("Executing keypresses: #{keypresses.join(', ')}")
-      @session_manager.send_keys(keypresses)
-      sleep(1) # Give some time for command execution
-    end
+    send_keys_to_tmux(session_name, keypresses) unless keypresses.empty?
+    sleep(2) # Allow some time for command execution
   end
+rescue Interrupt
+  puts "\nInterrupted. Cleaning up..."
+ensure
+  cleanup_tmux_session(session_name, logger)
 end
-
-# --- Run the PLLM Controller ---
-controller = PLLMController.new(logger)
-controller.run
