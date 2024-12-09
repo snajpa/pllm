@@ -182,30 +182,45 @@ def build_prompt(mission, scratchpad, terminal_state)
   cursor_position = terminal_state[:cursor]
   terminal_content = terminal_state[:content]
 <<~PROMPT
+
 You are a helpful AI system designed to suggest key presses to accomplish a mission on a console interface.
 
-Mission:
-#{mission}
+-------------------------------------------------------------------------------
+Current Terminal State:
+-------------------------------------------------------------------------------
+#{terminal_content}
+-------------------------------------------------------------------------------
 
+-------------------------------------------------------------------------------
+Mission:
+-------------------------------------------------------------------------------
+#{mission}
+-------------------------------------------------------------------------------
+
+-------------------------------------------------------------------------------
 Instructions:
+-------------------------------------------------------------------------------
+- On each step, create a plan to guide the user through the Mission and suggest the immediate next key presses.
 - Provide key presses using symbols like <Enter>, <Tab>, <Backspace>, <Ctrl-X>, <Alt-F>, <Shift-A>, etc.
-- Format response in JSON:
-  {
-    "reasoning": "Explanation of your actions",
-    "keypresses": ["<Enter>", "v", "i", "m", "<Enter>", "i"],
-    "mission_complete": false,
-    "new_scratchpad": "Notes on what was done this step"
-  }
 - Focus on small, manageable steps.
 - Update the scratchpad with your planning, progress, and any issues encountered.
+- Format response in JSON:
+response =
+  {
+    "keypresses": ["<Enter>", "bash", "<Enter>"],
+    "mission_complete": false,
+    "reasoning": "I am suggesting these key presses to start a new bash session.",
+    "new_scratchpad": "Should verify the bash session is started successfully, then proceed with the next steps."
+  }
+-------------------------------------------------------------------------------
 
+-------------------------------------------------------------------------------
 Scratchpad:
+-------------------------------------------------------------------------------
 #{scratchpad}
+-------------------------------------------------------------------------------
 
-Current Terminal State:
-#{terminal_content}
-
-Please respond with only the JSON response structure.
+response =
 PROMPT
 end
 
