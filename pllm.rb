@@ -9,7 +9,6 @@ require 'optparse'
 
 # --- Constants ---
 LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
-#LLAMA_API_ENDPOINT = 'http://37.205.14.54:8080/v1/completions'
 MISSION = 'Map locally reachable hosts and list those which run ssh server in file /tmp/ssh_hosts.'
 LOG_FILE = 'pllm.log'
 
@@ -24,11 +23,12 @@ def create_tmux_session(session_name, logger)
 end
 
 def send_keys_to_tmux(session_name, keys, logger)
+  # Mapping for recognized special keys
   key_mappings = {
     '<enter>' => 'Enter',
     '<tab>' => 'Tab',
     '<backspace>' => 'BSpace',
-    '<space>' => ' ',  # Direct space character
+    '<space>' => ' ',  
     '<escape>' => 'Escape',
     '<up>' => 'Up',
     '<down>' => 'Down',
@@ -43,34 +43,44 @@ def send_keys_to_tmux(session_name, keys, logger)
   }
 
   keys.each do |key|
-    key = key.downcase
-    
-    if key_mappings.key?(key)
-      system("tmux send-keys -t #{session_name} \"#{key_mappings[key]}\"")
+    # Normalize the key for case-insensitive matching of known tokens
+    normalized_key = key.downcase
+
+    if key_mappings.key?(normalized_key)
+      # It's one of the special keys
+      system("tmux send-keys -t #{session_name} \"#{key_mappings[normalized_key]}\"")
       logger.info("Sending special key: #{key}")
-    elsif key.match?(/^<(ctrl|c)-([a-z0-9])>$/)
-      _, char = key.split('-')
+    elsif normalized_key.match?(/^<ctrl-([a-z0-9])>$/)
+      # Ctrl combination
+      char = normalized_key.match(/^<ctrl-([a-z0-9])>$/)[1]
       system("tmux send-keys -t #{session_name} C-#{char}")
       logger.info("Sending Ctrl key: C-#{char}")
-    elsif key.match?(/^<(alt|a|meta|m)-([a-z0-9])>$/)
-      _, char = key.split('-')
+    elsif normalized_key.match?(/^<alt-([a-z0-9])>$/)
+      # Alt/Meta combination
+      char = normalized_key.match(/^<alt-([a-z0-9])>$/)[1]
       system("tmux send-keys -t #{session_name} M-#{char}")
-      logger.info("Sending Alt/Meta key: M-#{char}")
-    elsif key.match?(/^<(shift|s)-([a-z0-9])>$/)
-      _, char = key.split('-')
+      logger.info("Sending Alt key: M-#{char}")
+    elsif normalized_key.match?(/^<shift-([a-z0-9])>$/)
+      # Shift combination
+      # tmux supports S- for shifted characters if needed.
+      # Not all shifted keys might work as expected directly, but we follow instructions.
+      char = normalized_key.match(/^<shift-([a-z0-9])>$/)[1]
       system("tmux send-keys -t #{session_name} S-#{char}")
       logger.info("Sending Shift key: S-#{char}")
+    elsif key.start_with?('<') && key.end_with?('>')
+      # Unknown special key format
+      logger.warn("Unknown special key format: #{key}, skipping.")
+      next
     else
-      # Handle plain text or commands, ensuring special characters are properly escaped
+      # Plain character(s)
+      # Send them directly, character by character
       key.chars.each do |char|
-        case char
-        when '"', '\'', '$', '`', '\\'
-          system("tmux send-keys -t #{session_name} \\\#{char}")
-        else
-          system("tmux send-keys -t #{session_name} \"#{char}\"")
-        end
+        # Escape special characters for shell
+        # Actually `tmux send-keys` can send chars directly; we only need to escape quotes.
+        escaped_char = char.gsub(/(["`\\$'])/){|m| "\\" + m}
+        system("tmux send-keys -t #{session_name} \"#{escaped_char}\"")
       end
-      logger.info("Sending plain text or command: #{key}")
+      logger.info("Sending plain text: #{key}")
     end
 
     sleep(0.1)  # Small delay between key presses
@@ -83,8 +93,9 @@ def capture_tmux_output(session_name)
   raise "TMux capture error: #{stderr}" unless status.success?
 
   # Normalize the terminal output to 80x40 characters
-  normalized_output = stdout.lines.map.with_index do |line, index|
-    line.chomp.ljust(80)[0, 80]
+  lines = stdout.lines.map(&:chomp)
+  normalized_output = lines.map do |line|
+    line.ljust(80)[0, 80]
   end
   normalized_output += Array.new(40 - normalized_output.size, ' ' * 80) if normalized_output.size < 40
 
@@ -95,7 +106,7 @@ def capture_tmux_output(session_name)
   content_lines = normalized_output.map.with_index do |line, idx|
     line_with_number = "#{idx.to_s.rjust(4)} #{line}"
     if idx == cursor_position[:y]
-      line_with_number[cursor_position[:x] + 5] = '█'  # +5 to account for line number and spaces
+      line_with_number[cursor_position[:x] + 5] = '█' rescue nil
     end
     line_with_number
   end
@@ -121,7 +132,7 @@ end
 def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 600, repeat_penalty: 1.1, top_p: 0.98, top_k: 30, stream: true, temperature: 1 }.to_json
+  request.body = { prompt: prompt, max_tokens: 600, repeat_penalty: 1.1, top_p: 0.98, top_k: 30, stream: true, temperature: 0.7 }.to_json
 
   begin
     full_response = ""
@@ -140,7 +151,7 @@ def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block
                 $stdout.flush
                 full_response += content
 
-                # Track brackets
+                # Track brackets for JSON extraction
                 content.chars.each do |char|
                   case char
                   when '{'
@@ -150,17 +161,16 @@ def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block
                     bracket_count -= 1
                     current_json += char
                     if bracket_count == 0 && !current_json.strip.empty?
-                      # We have a complete JSON response, yield it and return
                       block.call(current_json)
                       if options[:accumulate]
-                        history_limit = 10000  # Example limit in characters
+                        history_limit = 10000
                         history << "Terminal state:\n#{terminal_state[:content]}\nResponse:\n#{current_json}\n\n"
                         history = history[-history_limit..-1] if history.length > history_limit
                       end
                       return
                     end
                   else
-                    current_json += char
+                    current_json += char unless bracket_count == 0 && char.strip.empty?
                   end
                 end
               end
@@ -172,7 +182,6 @@ def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block
       end
     end
 
-    # If we still have unmatched brackets, something went wrong
     if bracket_count != 0
       logger.error("Unmatched brackets in LLM response")
     end
@@ -219,7 +228,13 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   ------------------------------------------------------------------------------------
   - If this is not the first iteration, review the scratchpad to understand the context and progress. Verify we are on the right track.
   - On each step, create a plan to guide the user through the Mission and suggest the immediate next key presses.
-  - Provide key presses using symbols like <Enter>, <Tab>, <Backspace>, <Ctrl-X>, <Alt-F>, <Shift-A>, etc.
+  - Provide key presses as an array where each element is a single keypress.
+  - For normal characters, just provide the character: "a", "b", "c", "1", "2", etc.
+  - For recognized special keys, use the exact angle bracket notation:
+    <Enter>, <Tab>, <Backspace>, <Space>, <Escape>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, <Insert>, <Delete>
+  - For Ctrl combinations: <Ctrl-[char]> (e.g., <Ctrl-c>)
+  - For Alt/Meta combinations: <Alt-[char]> (e.g., <Alt-f>)
+  - For Shift combinations: <Shift-[char]> (e.g., <Shift-a>)
   - Focus on small, manageable steps.
   - The user doesn't mind if you use non-interactive commands to speed up the process.
   - The user has no understanding of the mission and is relying on your guidance.
@@ -228,19 +243,21 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
 
   - Format response in JSON:
-  response =
-    {
-      "reasoning": "I am suggesting these key presses to start a new bash session.",
-      "mission_complete": false,
-      "new_scratchpad": "Verify the new bash session is started successfully.",
-      "keypresses": ["<Enter>", "b", "a", "s", "h", "<Enter>"],
-      "next_step": "see below",
-    }
+    response =
+      {
+        "reasoning": "I am suggesting these key presses to start a new bash session.",
+        "mission_complete": false,
+        "new_scratchpad": "Verify the new bash session is started successfully.",
+        "keypresses": ["<Enter>", "b", "a", "s", "h", "<Enter>"],
+        "next_step": "see below"
+      }
 
-  - Note: Be careful with the key presses, only send one key hit at a time. Example: ["c", "o", "m", "o", "m", "m", "a", "n", "d", "<Space>", "-", "p", <Space>", "v", "a", "l", "u", "e", "<Enter>"]
-  - Special keys and combinations should be enclosed in angle brackets. Example: ["<Ctrl-X>", "<Ctrl-S>"]
-  - Examples of valid keypresses: ["<Enter>", "l", "s", "<Enter>"], ["<Ctrl-X>", "<Ctrl-S>"], ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", " ", "W", "o", "r", "l", "d", "'", "<Enter>"]
-  - Special keys that are recognized: "<Space>", "<Enter>", "<Tab>", "<Backspace>", "<Escape>", "<Up>", "<Down>", "<Left>", "<Right>", "<Home>", "<End>", "<PageUp>", "<PageDown>", "<Insert>", "<Delete>"
+  Example sequences:
+    ["l", "s", "<Enter>"]
+    ["<Ctrl-c>"]
+    ["e", "c", "h", "o", "<Space>", "'", "H", "e", "l", "l", "o", "'", "<Enter>"]
+    ["<Alt-f>", "f", "o", "o", "<Enter>"]
+    ["<Shift-a>", "A", "<Enter>"]
 
   ------------------------------------------------------------------------------------
 
@@ -347,16 +364,11 @@ begin
             new_state = capture_tmux_output(session_name)
             logger.info("Post-Keypress Terminal State: #{new_state[:content][0..100]}...")
 
-            if !new_state[:content].include?("some expected text after progress")
-              logger.warn("Expected progress not detected, suggesting reattempt or manual intervention.")
-              # Here you might choose to either ask the LLM again or halt for manual intervention.
-            end
+            # Here you could add checks for expected output
           end
 
           # Break the loop if mission_complete is true
-          if mission_complete
-            break
-          end
+          break if mission_complete
         else
           puts "Invalid LLM response format. Please check the response for errors."
           logger.error("Invalid LLM response format: #{parsed_response}")
