@@ -202,12 +202,6 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   
   prompt = <<~PROMPT
   #{history_section}
-  ------------------------------------------------------------------------------------
-  ------------------------------------------------------------------------------------
-
-
-  ------------------------------------------------------------------------------------
-
   You are a helpful AI system designed to suggest key presses to accomplish a mission on a console interface.
 
   The system has started a new session for you in a terminal emulator. You will be provided with the current terminal state, mission, and instructions to guide the user through the mission.
@@ -219,13 +213,6 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   Note: 
   - The terminal output has been prepended with line numbers by the system to help track position. These are not part of the actual terminal content.
   - The block symbol '█' indicates the current cursor position.
-  - The file 'prime_numbers.rb' has been created. Now, we need to write the Ruby code inside this file.
-
-  ------------------------------------------------------------------------------------
-  Mission:
-  ------------------------------------------------------------------------------------
-  #{mission}
-  ------------------------------------------------------------------------------------
 
   ------------------------------------------------------------------------------------
   Instructions:
@@ -258,6 +245,17 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   ------------------------------------------------------------------------------------
 
   ------------------------------------------------------------------------------------
+  User's Mission:
+  ------------------------------------------------------------------------------------
+
+  The user's end goal is to:
+
+  #{mission}
+
+  Are we on the right track? Use scratchpad to verify and plan the next steps.
+  ------------------------------------------------------------------------------------
+
+  ------------------------------------------------------------------------------------
   Scratchpad history (older entries are at the top, new entries at the bottom):
   ------------------------------------------------------------------------------------
 
@@ -275,6 +273,7 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
        -------------------------------------------------------------------------------
 
   response =
+  ```json
   PROMPT
 end
 
@@ -359,9 +358,11 @@ begin
             break
           end
         else
+          puts "Invalid LLM response format. Please check the response for errors."
           logger.error("Invalid LLM response format: #{parsed_response}")
         end
       rescue JSON::ParserError => e
+        puts "Failed to parse LLM response. Please check the response for errors."
         logger.error("Failed to parse LLM response: #{e.message}")
       end
     end
