@@ -8,8 +8,9 @@ require 'logger'
 require 'optparse'
 
 # --- Constants ---
-LLAMA_API_ENDPOINT = 'http://localhost:8080/v1/completions'
-MISSION = 'Write a Ruby script in a file named "prime_numbers.rb" that calculates prime numbers up to 100.'
+LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
+#LLAMA_API_ENDPOINT = 'http://37.205.14.54:8080/v1/completions'
+MISSION = 'Map locally reachable hosts and list those which run ssh server in file /tmp/ssh_hosts.'
 LOG_FILE = 'pllm.log'
 
 # --- Helper Functions ---
@@ -120,7 +121,7 @@ end
 def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 500, repeat_penalty: 1.1, top_p: 0.98, top_k: 30, stream: true, temperature: 0.8 }.to_json
+  request.body = { prompt: prompt, max_tokens: 600, repeat_penalty: 1.1, top_p: 0.98, top_k: 30, stream: true, temperature: 1 }.to_json
 
   begin
     full_response = ""
@@ -236,30 +237,29 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   - The user doesn't mind if you use non-interactive commands to speed up the process.
   - The user has no understanding of the mission and is relying on your guidance.
   - Update the scratchpad with your planning, progress, and any issues encountered. Never lose track of your progress and next steps.
+  - Check if you're not stuck, clear the screen and start over if needed.
+  - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
+
   - Format response in JSON:
   response =
     {
       "reasoning": "I am suggesting these key presses to start a new bash session.",
       "mission_complete": false,
       "new_scratchpad": "Verify the new bash session is started successfully.",
-      "keypresses": ["<Enter>", "bash", "<Enter>"],
+      "keypresses": ["<Enter>", "b", "a", "s", "h", "<Enter>"],
       "next_step": "see below",
     }
-  - Note: Be careful with the white-spaces. Example: ["command", "<Space>", "-p", <Space>", "value", "<Enter>"]
+
+  - Note: Be careful with the key presses, only send one key hit at a time. Example: ["c", "o", "m", "o", "m", "m", "a", "n", "d", "<Space>", "-", "p", <Space>", "v", "a", "l", "u", "e", "<Enter>"]
   - Special keys and combinations should be enclosed in angle brackets. Example: ["<Ctrl-X>", "<Ctrl-S>"]
-  - Examples of valid keypresses: ["<Enter>", "ls", "<Enter>"], ["<Ctrl-X>", "<Ctrl-S>"], ["echo 'Hello World'", "<Enter>"]
-  - Check if you're not stuck, clear the screen and start over if needed.
-  - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
+  - Examples of valid keypresses: ["<Enter>", "l", "s", "<Enter>"], ["<Ctrl-X>", "<Ctrl-S>"], ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", " ", "W", "o", "r", "l", "d", "'", "<Enter>"]
+  - Special keys that are recognized: "<Space>", "<Enter>", "<Tab>", "<Backspace>", "<Escape>", "<Up>", "<Down>", "<Left>", "<Right>", "<Home>", "<End>", "<PageUp>", "<PageDown>", "<Insert>", "<Delete>"
+
   ------------------------------------------------------------------------------------
 
   ------------------------------------------------------------------------------------
   Scratchpad history (older entries are at the top, new entries at the bottom):
   ------------------------------------------------------------------------------------
-  [2024-12-09T20:22:07Z] Cursor Position: (0, 0) - Verify the new bash session is started successfully.
-  Mission Complete: false
-  Reasoning: I am suggesting these key presses to start a new bash session.
-  Keypresses: <Enter>, bash, <Enter>
-  Next Step: (...Note to the model: Next Step of a mission would be here but since this was actually run before the zeroth iteration, it is left out...)
 
   #{scratchpad}
   <new_scratchpad will be here>
@@ -337,7 +337,7 @@ begin
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}] Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
+          scratchpad += "\n[#{timestamp}] New Scratchpad Entry\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
 
           # Execute keypresses
           unless keypresses.empty?
