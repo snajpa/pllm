@@ -25,6 +25,7 @@ It\'s probably the best to start with a fresh branch based on linus/master and t
 
 The target branch should be named "vpsadminos-6.13".
 
+Pro-tip: You can use "git log --oneline" and Space to scroll through the log quicker.
 '
 LOG_FILE = 'pllm.log'
 
