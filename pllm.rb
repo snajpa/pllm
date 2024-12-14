@@ -9,111 +9,70 @@ require 'optparse'
 
 # --- Constants ---
 LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
-MISSION = 'Map locally reachable hosts and list those which run ssh server in file /tmp/ssh_hosts.'
+MISSION = '
+
+There\'s a Linux dev machine reachable through SSH at root@172.16.106.12.
+
+On that machine, in /root/linux directory, is a clone of vpsAdminOS Linux fork.
+
+Start from a branch named "vpsadminos-6.12", which denotes it\'s based on 6.12 vanilla kernel.
+
+There\'s about ~50 patches on top of some 6.12.x kernel and we need to port these on top of current linus/master.
+
+The goal is to have a branch based on linus/master with all the patches from vpsadminos-6.12 branch in the end.
+
+It\'s probably the best to start with a fresh branch based on linus/master and then cherry-pick patches from vpsadminos-6.12, but the user is not sure about the best approach nor the exact steps.
+
+The target branch should be named "vpsadminos-6.13", it probably already exists in the repository, so you might need to delete it first.
+
+'
 LOG_FILE = 'pllm.log'
 
 # --- Helper Functions ---
 def create_tmux_session(session_name, logger)
-  system("tmux new-session -d -s #{session_name} -n main")
-  system("tmux set-option -t #{session_name} status off")
-  system("tmux resize-pane -t #{session_name} -x 80 -y 40")
+  system("tmux", "new-session", "-d", "-s", session_name, "-n", "main")
+  system("tmux", "set-option", "-t", session_name, "status", "off")
+  system("tmux", "resize-pane", "-t", session_name, "-x", "80", "-y", "40")
   logger.info("Created TMux session #{session_name} with window size 80x40")
-  system("tmux send-keys -t #{session_name} 'clear' Enter")
+  system("tmux", "send-keys", "-t", session_name, "clear", "Enter")
   sleep(1) # Give time for the shell to initialize
 end
 
 def send_keys_to_tmux(session_name, keys, logger)
-  # Mapping for recognized special keys
-  key_mappings = {
-    '<enter>' => 'Enter',
-    '<tab>' => 'Tab',
-    '<backspace>' => 'BSpace',
-    '<space>' => ' ',  
-    '<escape>' => 'Escape',
-    '<up>' => 'Up',
-    '<down>' => 'Down',
-    '<left>' => 'Left',
-    '<right>' => 'Right',
-    '<home>' => 'Home',
-    '<end>' => 'End',
-    '<pageup>' => 'PageUp',
-    '<pagedown>' => 'PageDown',
-    '<insert>' => 'Insert',
-    '<delete>' => 'Delete'
-  }
-
   keys.each do |key|
-    # Normalize the key for case-insensitive matching of known tokens
-    normalized_key = key.downcase
-
-    if key_mappings.key?(normalized_key)
-      # It's one of the special keys
-      system("tmux send-keys -t #{session_name} \"#{key_mappings[normalized_key]}\"")
-      logger.info("Sending special key: #{key}")
-    elsif normalized_key.match?(/^<ctrl-([a-z0-9])>$/)
-      # Ctrl combination
-      char = normalized_key.match(/^<ctrl-([a-z0-9])>$/)[1]
-      system("tmux send-keys -t #{session_name} C-#{char}")
-      logger.info("Sending Ctrl key: C-#{char}")
-    elsif normalized_key.match?(/^<alt-([a-z0-9])>$/)
-      # Alt/Meta combination
-      char = normalized_key.match(/^<alt-([a-z0-9])>$/)[1]
-      system("tmux send-keys -t #{session_name} M-#{char}")
-      logger.info("Sending Alt key: M-#{char}")
-    elsif normalized_key.match?(/^<shift-([a-z0-9])>$/)
-      # Shift combination
-      # tmux supports S- for shifted characters if needed.
-      # Not all shifted keys might work as expected directly, but we follow instructions.
-      char = normalized_key.match(/^<shift-([a-z0-9])>$/)[1]
-      system("tmux send-keys -t #{session_name} S-#{char}")
-      logger.info("Sending Shift key: S-#{char}")
-    elsif key.start_with?('<') && key.end_with?('>')
-      # Unknown special key format
-      logger.warn("Unknown special key format: #{key}, skipping.")
-      next
-    else
-      # Plain character(s)
-      # Send them directly, character by character
-      key.chars.each do |char|
-        # Escape special characters for shell
-        # Actually `tmux send-keys` can send chars directly; we only need to escape quotes.
-        escaped_char = char.gsub(/(["`\\$'])/){|m| "\\" + m}
-        system("tmux send-keys -t #{session_name} \"#{escaped_char}\"")
-      end
-      logger.info("Sending plain text: #{key}")
-    end
-
+    # Send keys to tmux exactly as provided by the LLM.
+    # Using array form of system call to avoid shell parsing.
+    system("tmux", "send-keys", "-t", session_name, "--", key)
+    logger.info("Sending key: #{key}")
     sleep(0.1)  # Small delay between key presses
   end
 end
 
 def capture_tmux_output(session_name)
-  # Capture the terminal output
   stdout, stderr, status = Open3.capture3("tmux capture-pane -pt #{session_name}")
   raise "TMux capture error: #{stderr}" unless status.success?
 
-  # Normalize the terminal output to 80x40 characters
   lines = stdout.lines.map(&:chomp)
-  normalized_output = lines.map do |line|
-    line.ljust(80)[0, 80]
-  end
+  normalized_output = lines.map { |line| line.ljust(80)[0,80] }
   normalized_output += Array.new(40 - normalized_output.size, ' ' * 80) if normalized_output.size < 40
 
-  # Get cursor position
   cursor_position = get_cursor_position(session_name)
 
-  # Add line numbers and block symbol where the cursor is
   content_lines = normalized_output.map.with_index do |line, idx|
     line_with_number = "#{idx.to_s.rjust(4)} #{line}"
     if idx == cursor_position[:y]
-      line_with_number[cursor_position[:x] + 5] = '█' rescue nil
+      begin
+        line_with_number[cursor_position[:x] + 5] = '█'
+      rescue
+        # In case the cursor position is out of range
+      end
     end
     line_with_number
   end
 
-  { 
-    content: content_lines.join("\n"), 
-    cursor: cursor_position 
+  {
+    content: content_lines.join("\n"),
+    cursor: cursor_position
   }
 end
 
@@ -125,14 +84,22 @@ def get_cursor_position(session_name)
 end
 
 def cleanup_tmux_session(session_name, logger)
-  system("tmux kill-session -t #{session_name}")
+  system("tmux", "kill-session", "-t", session_name)
   logger.info("Killed TMux session #{session_name}")
 end
 
 def query_llm(endpoint, prompt, history, terminal_state, options, logger, &block)
   uri = URI.parse(endpoint)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-  request.body = { prompt: prompt, max_tokens: 600, repeat_penalty: 1.1, top_p: 0.98, top_k: 30, stream: true, temperature: 0.7 }.to_json
+  request.body = {
+    prompt: prompt,
+    max_tokens: 600,
+    repeat_penalty: 1.1,
+    top_p: 0.98,
+    top_k: 30,
+    stream: true,
+    temperature: 0.7
+  }.to_json
 
   begin
     full_response = ""
@@ -208,7 +175,7 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   else
     ''
   end
-  
+
   prompt = <<~PROMPT
   #{history_section}
   You are a helpful AI system designed to suggest key presses to accomplish a mission on a console interface.
@@ -226,51 +193,32 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   ------------------------------------------------------------------------------------
   Instructions:
   ------------------------------------------------------------------------------------
-  - If this is not the first iteration, review the scratchpad to understand the context and progress. Verify we are on the right track.
-  - On each step, create a plan to guide the user through the Mission and suggest the immediate next key presses.
-  - Provide key presses as an array where each element is a single keypress.
-  - For normal characters, just provide the character: "a", "b", "c", "1", "2", etc.
-  - For recognized special keys, use the exact angle bracket notation:
-    <Enter>, <Tab>, <Backspace>, <Space>, <Escape>, <Up>, <Down>, <Left>, <Right>, <Home>, <End>, <PageUp>, <PageDown>, <Insert>, <Delete>
-  - For Ctrl combinations: <Ctrl-[char]> (e.g., <Ctrl-c>)
-  - For Alt/Meta combinations: <Alt-[char]> (e.g., <Alt-f>)
-  - For Shift combinations: <Shift-[char]> (e.g., <Shift-a>)
-  - Focus on small, manageable steps.
-  - The user doesn't mind if you use non-interactive commands to speed up the process.
-  - The user has no understanding of the mission and is relying on your guidance.
-  - Update the scratchpad with your planning, progress, and any issues encountered. Never lose track of your progress and next steps.
-  - Check if you're not stuck, clear the screen and start over if needed.
-  - Avoid suggesting the same correction multiple times unless the user action changes. Move forward once an action is completed or corrected.
+  - On each step, create a plan and then provide the key presses needed.
+  - Each element in "keypresses" array is a single keypress.
 
-  - Format response in JSON:
-    response =
+  - Normal characters: "a", "b", "c", "A", "B", "C", "1", "2", ".", " ", etc.
+  - Special named keys: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
+  - Ctrl keys: Tmux uses C- notation for Ctrl keys. For example, "C-a" for Ctrl+a, "C-x" for Ctrl+x, etc.
+  - Alt keys: Tmux uses M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
+  - Send uppercase letters directly as uppercase. No need for Shift notation.
+  - If you need multiple steps, output them in a single "keypresses" array, one key per element.
+  - Example sequences:
+      ["l", "s", "Enter"]
+      ["C-c"]
+      ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", "'", "Enter"]
+
+  - Format response in valid JSON only with the following keys:
+    ```json
       {
         "reasoning": "I am suggesting these key presses to start a new bash session.",
         "mission_complete": false,
         "new_scratchpad": "Verify the new bash session is started successfully.",
-        "keypresses": ["<Enter>", "b", "a", "s", "h", "<Enter>"],
-        "next_step": "see below"
+        "keypresses": ["Enter", "b", "a", "s", "h", "Enter"],
+        "next_step": "Analyze the prompt format for future guidance."
       }
-
-  Example sequences:
-    ["l", "s", "<Enter>"]
-    ["<Ctrl-c>"]
-    ["e", "c", "h", "o", "<Space>", "'", "H", "e", "l", "l", "o", "'", "<Enter>"]
-    ["<Alt-f>", "f", "o", "o", "<Enter>"]
-    ["<Shift-a>", "A", "<Enter>"]
-
+    ```
   ------------------------------------------------------------------------------------
 
-  ------------------------------------------------------------------------------------
-  User's Mission:
-  ------------------------------------------------------------------------------------
-
-  The user's end goal is to:
-
-  #{mission}
-
-  Are we on the right track? Use scratchpad to verify and plan the next steps.
-  ------------------------------------------------------------------------------------
 
   ------------------------------------------------------------------------------------
   Scratchpad history (older entries are at the top, new entries at the bottom):
@@ -280,7 +228,17 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   <new_scratchpad will be here>
   ------------------------------------------------------------------------------------
 
-  The current state of the terminal follows. Analyze the content and cursor position to provide the next key presses.
+  ------------------------------------------------------------------------------------
+  User's Mission:
+  ------------------------------------------------------------------------------------
+  The user's end goal is to:
+
+  #{mission}
+
+  Are we on the right track? Use scratchpad to verify and plan the next steps.
+  ------------------------------------------------------------------------------------
+
+  The current state of the terminal follows:
   
   ------------------------------------------------------------------------------------
        Terminal Window (80x40)
@@ -289,7 +247,11 @@ def build_prompt(mission, scratchpad, terminal_state, history, options)
   #{terminal_content}
        -------------------------------------------------------------------------------
 
-  response =
+  Please provide key presses to guide the user to the next step.
+
+  ====================================================================================
+
+
   ```json
   PROMPT
 end
@@ -337,12 +299,13 @@ begin
         if valid_llm_response?(parsed_response)
           reasoning = parsed_response['reasoning']
           keypresses = parsed_response['keypresses'] || []
+          keypresses_fmt = keypresses.map { |key| "\"#{key}\"" }.join(', ')
           mission_complete = parsed_response['mission_complete']
           new_scratchpad = parsed_response['new_scratchpad']
           next_step = parsed_response['next_step']
 
           logger.info("LLM Reasoning: #{reasoning}")
-          logger.info("LLM Keypresses: #{keypresses.join(', ')}")
+          logger.info("LLM Keypresses: #{keypresses_fmt}")
           logger.info("Mission Complete? #{mission_complete}")
 
           if keypresses.empty? && !mission_complete
@@ -353,28 +316,24 @@ begin
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}] New Scratchpad Entry\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]}) - #{new_scratchpad}\nKeypresses: #{keypresses.join(', ')}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
+          scratchpad += "\n[#{timestamp}]\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\nScratchpad entry:#{new_scratchpad}\nKeypresses: #{keypresses_fmt}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
 
-          # Execute keypresses
           unless keypresses.empty?
             send_keys_to_tmux(session_name, keypresses, logger)
-            sleep(2)  # Allow some time for command execution
-
-            # Check if the terminal state has changed as expected after keypresses
+            sleep(2) # Allow some time for command execution
             new_state = capture_tmux_output(session_name)
             logger.info("Post-Keypress Terminal State: #{new_state[:content][0..100]}...")
-
-            # Here you could add checks for expected output
           end
 
-          # Break the loop if mission_complete is true
           break if mission_complete
         else
           puts "Invalid LLM response format. Please check the response for errors."
+          scratchpad += "\n[#{Time.now.utc.iso8601}] System Error\Invalid Your response format: #{parsed_response}\n\n"
           logger.error("Invalid LLM response format: #{parsed_response}")
         end
       rescue JSON::ParserError => e
         puts "Failed to parse LLM response. Please check the response for errors."
+        scratchpad += "\n[#{Time.now.utc.iso8601}] System Error\nFailed to parse Your response: #{e.message} - the raw response was: #{json_response}\n\n"
         logger.error("Failed to parse LLM response: #{e.message}")
       end
     end
