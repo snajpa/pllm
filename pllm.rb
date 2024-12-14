@@ -99,12 +99,12 @@ def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
   request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
   request.body = {
     prompt: prompt,
-    max_tokens: 768,
+    max_tokens: 1024,
     #repeat_penalty: 1.1,
     #top_p: 0.98,
     #top_k: 10,
     stream: true,
-    temperature: 0.6
+    temperature: 0.3
   }.to_json
 
   begin
@@ -209,18 +209,18 @@ def build_prompt(mission, scratchpad, terminal_state, options)
 
   Are we on the right track? Use scratchpad to verify and plan the next steps.
   -----------------------------------------------------------------------------------
-  The current state of the terminal follows for your analysis:
+  CURRENT TERMINAL STATE FOR YOUR ANALYSIS:
   -----------------------------------------------------------------------------------
      | Terminal window wize: (80, 40)
      | Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
      --------------------------------------------------------------------------------
   #{terminal_content}
-     --------------------------------------------------------------------------------
+  -----------------------------------------------------------------------------------
   Example response format:
   ```json
-  {"reasoning":"(reasoning)","mission_complete":false,"new_scratchpad":"(something about verifying completion of previous step)","keypresses":["Enter","e","x","a","m","p","l","e","Enter"],"next_step":"(brief description of next step)"}
+  {"reasoning":"(ultra-brief reasoning)","mission_complete":false,"new_scratchpad":"(something about verifying completion of previous step)","keypresses":["Enter","e","x","a","m","p","l","e","Enter"],"next_step":"(brief description of next step and general direction)"}
   ```
-  Your response:
+  Your response based on the current terminal state, mission, and mission history:
   ```json
   PROMPT
 end
