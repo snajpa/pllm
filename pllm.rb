@@ -175,35 +175,21 @@ def build_prompt(mission, scratchpad, terminal_state, options)
   - The terminal output has been prepended with line numbers by the system to help track position. These are not part of the actual terminal content.
   - The block symbol '█' indicates the current cursor position.
 
-  -----------------------------------------------------------------------------------
   Instructions:
-  -----------------------------------------------------------------------------------
   - On each step, create a plan and then provide the key presses needed.
   - Each element in "keypresses" array is a single keypress.
+  - Format response in valid JSON only, example below.
 
   - Normal characters: "a", "b", "c", "A", "B", "C", "1", "2", ".", " ", etc.
   - Special named keys: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
-  - Ctrl keys: Tmux uses C- notation for Ctrl keys. For example, "C-a" for Ctrl+a, "C-x" for Ctrl+x, etc.
-  - Alt keys: Tmux uses M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
+  - Ctrl keys: Use C- notation for Ctrl keys. For example, "C-a" for Ctrl+a, "C-x" for Ctrl+x, etc.
+  - Alt keys: Use M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
   - Send uppercase letters directly as uppercase. No need for Shift notation.
   - If you need multiple steps, output them in a single "keypresses" array, one key per element.
   - Example sequences:
       ["l", "s", "Enter"]
       ["C-c"]
       ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", "'", "Enter"]
-
-  - Format response in valid JSON only with the following keys:
-    ```json
-      {
-        "reasoning": "I am suggesting these key presses to start a new bash session.",
-        "mission_complete": false,
-        "new_scratchpad": "Verify the new bash session is started successfully.",
-        "keypresses": ["Enter", "b", "a", "s", "h", "Enter"],
-        "next_step": "Analyze the prompt format for future guidance."
-      }
-    ```
-  -----------------------------------------------------------------------------------
-
 
   -----------------------------------------------------------------------------------
   Mission history (older entries are at the top, new entries at the bottom):
@@ -222,22 +208,18 @@ def build_prompt(mission, scratchpad, terminal_state, options)
 
   Are we on the right track? Use scratchpad to verify and plan the next steps.
   -----------------------------------------------------------------------------------
-
-  The current state of the terminal follows:
-  
+  The current state of the terminal follows for your analysis:
   -----------------------------------------------------------------------------------
      | Terminal window wize: (80, 40)
      | Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
      --------------------------------------------------------------------------------
   #{terminal_content}
      --------------------------------------------------------------------------------
-  -----------------------------------------------------------------------------------
-
-  Please provide key presses to guide the user to the next step.
-
-  ===================================================================================
-
-
+  Example response format:
+  ```json
+  {"reasoning":"(reasoning)","mission_complete":false,"new_scratchpad":"(something about verifying completion of previous step)","keypresses":["Enter","e","x","a","m","p","l","e","Enter"],"next_step":"(brief description of next step)"}
+  ```
+  Your response:
   ```json
   PROMPT
 end
@@ -301,7 +283,7 @@ begin
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}]\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\nScratchpad entry: #{new_scratchpad}\nKeypresses: #{keypresses_fmt}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
+          scratchpad += "\n[#{timestamp}]\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\nTerminal State:\n#{terminal_state[:content]}\nScratchpad entry: #{new_scratchpad}\nKeypresses: #{keypresses_fmt}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
 
           unless keypresses.empty?
             send_keys_to_tmux(session_name, keypresses, logger)
