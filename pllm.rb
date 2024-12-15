@@ -8,6 +8,8 @@ require 'logger'
 require 'optparse'
 
 # --- Constants ---
+WINDOW_X = 80
+WINDOW_Y = 24
 LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
 MISSION = '
 
@@ -33,8 +35,8 @@ LOG_FILE = 'pllm.log'
 def create_tmux_session(session_name, logger)
   system("tmux", "new-session", "-d", "-s", session_name, "-n", "main")
   system("tmux", "set-option", "-t", session_name, "status", "off")
-  system("tmux", "resize-pane", "-t", session_name, "-x", "80", "-y", "40")
-  logger.info("Created TMux session #{session_name} with window size 80x40")
+  system("tmux", "resize-pane", "-t", session_name, "-x", "#{WINDOW_X}", "-y", "#{WINDOW_Y}")
+  logger.info("Created TMux session #{session_name} with window size #{WINDOW_X}x#{WINDOW_Y}")
   system("tmux", "send-keys", "-t", session_name, "clear", "Enter")
   sleep(1) # Give time for the shell to initialize
 end
@@ -59,8 +61,8 @@ def capture_tmux_output(session_name)
   raise "TMux capture error: #{stderr}" unless status.success?
 
   lines = stdout.lines.map(&:chomp)
-  normalized_output = lines.map { |line| line.ljust(80)[0,80] }
-  normalized_output += Array.new(40 - normalized_output.size, ' ' * 80) if normalized_output.size < 40
+  normalized_output = lines.map { |line| line.ljust(WINDOW_X)[0,WINDOW_X] }
+  normalized_output += Array.new(WINDOW_Y - normalized_output.size, ' ' * WINDOW_X) if normalized_output.size < WINDOW_Y
 
   cursor_position = get_cursor_position(session_name)
 
@@ -211,7 +213,7 @@ def build_prompt(mission, scratchpad, terminal_state, options)
   -----------------------------------------------------------------------------------
   CURRENT TERMINAL STATE FOR YOUR ANALYSIS:
   -----------------------------------------------------------------------------------
-     | Terminal window wize: (80, 40)
+     | Terminal window wize: (#{WINDOW_X}, #{WINDOW_Y})
      | Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
      --------------------------------------------------------------------------------
   #{terminal_content}
