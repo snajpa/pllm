@@ -15,7 +15,7 @@ MISSION = '
 
 There\'s a Linux dev machine reachable through SSH at root@172.16.106.12.
 
-On that machine, in /root/linux directory, is a clone of vpsAdminOS Linux fork.
+On that machine, in /root/linux-pllm/ directory, is a clone of vpsAdminOS Linux fork.
 
 Start from a branch named "vpsadminos-6.12", which denotes it\'s based on 6.12 vanilla kernel.
 
@@ -102,11 +102,11 @@ def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
   request.body = {
     prompt: prompt,
     max_tokens: 1024,
-    #repeat_penalty: 1.1,
-    #top_p: 0.98,
-    #top_k: 10,
+    repeat_penalty: 1.1,
+    top_p: 0.95,
+    top_k: 20,
     stream: true,
-    temperature: 0.3
+    temperature: 1
   }.to_json
 
   begin
@@ -193,7 +193,11 @@ def build_prompt(mission, scratchpad, terminal_state, options)
       ["l", "s", "Enter"]
       ["C-c"]
       ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", "'", "Enter"]
-
+  - Example response format:
+  ```json
+  {"reasoning":"(ultra-brief reasoning)","mission_complete":false,"new_scratchpad":"(something about verifying completion of previous step)","keypresses":["Enter","e","x","a","m","p","l","e","Enter"],"next_step":"(brief description of next step and general direction)"}
+  ```
+  
   -----------------------------------------------------------------------------------
   Mission history (older entries are at the top, new entries at the bottom):
   -----------------------------------------------------------------------------------
@@ -218,10 +222,7 @@ def build_prompt(mission, scratchpad, terminal_state, options)
      --------------------------------------------------------------------------------
   #{terminal_content}
   -----------------------------------------------------------------------------------
-  Example response format:
-  ```json
-  {"reasoning":"(ultra-brief reasoning)","mission_complete":false,"new_scratchpad":"(something about verifying completion of previous step)","keypresses":["Enter","e","x","a","m","p","l","e","Enter"],"next_step":"(brief description of next step and general direction)"}
-  ```
+
   Your response based on the current terminal state, mission, and mission history:
   ```json
   PROMPT
