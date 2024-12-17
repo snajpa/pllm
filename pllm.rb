@@ -6,6 +6,8 @@ require 'open3'
 require 'time'
 require 'logger'
 require 'optparse'
+require 'timeout'
+require 'tempfile'
 
 # --- Constants ---
 WINDOW_X = 80
@@ -36,7 +38,6 @@ def create_tmux_session(session_name, logger)
   system("tmux", "new-session", "-d", "-s", session_name, "-n", "main")
   system("tmux", "set-option", "-t", session_name, "status", "off")
   system("tmux", "resize-pane", "-t", session_name, "-x", "#{WINDOW_X}", "-y", "#{WINDOW_Y}")
-  logger.info("Created TMux session #{session_name} with window size #{WINDOW_X}x#{WINDOW_Y}")
   system("tmux", "send-keys", "-t", session_name, "clear", "Enter")
   sleep(1) # Give time for the shell to initialize
 end
@@ -49,7 +50,6 @@ def send_keys_to_tmux(session_name, keys, logger)
       key = "Space"
     end
     system("tmux", "send-keys", "-t", session_name, "--", key)
-    logger.info("Sending key: #{key}")
     sleep 0.05
     #puts "Sent key: #{key}"
     #sleep(0.5)  # Small delay between key presses
@@ -93,7 +93,46 @@ end
 
 def cleanup_tmux_session(session_name, logger)
   system("tmux", "kill-session", "-t", session_name)
-  logger.info("Killed TMux session #{session_name}")
+end
+
+def edit_response_with_timeout(json_response, timeout)
+  editor = ENV['EDITOR']
+  raise 'EDITOR environment variable not set' unless editor
+  puts "\nPress any key to open the editor for response editing..."
+
+  IO.select([$stdin], nil, nil, timeout) do
+    c = $stdin.getc
+    if c
+      temp_file = Tempfile.new('llm_response')
+      temp_file.write(JSON.pretty_generate(JSON.parse(json_response), array_nl: '', indent: ''))
+      temp_file.close
+      
+      puts "\nOpening editor for response editing..."
+      status = system("#{editor} #{temp_file.path}")
+
+      if !status
+        puts "Editor exited with an error. Using original response."
+        return json_response
+      end
+
+      if File.exist?(temp_file.path) && File.size(temp_file.path) > 0
+        edited_content = File.read(temp_file.path)
+        begin
+          JSON.parse(edited_content)
+          return edited_content
+        rescue JSON::ParserError => e
+          puts "Warning: The edited response is not valid JSON. Using original response."
+          return json_response
+        ensure
+          temp_file.unlink
+        end
+      else
+        puts "File not found. Using original response."
+        return json_response
+      end
+    end
+  end
+  json_response
 end
 
 def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
@@ -102,11 +141,12 @@ def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
   request.body = {
     prompt: prompt,
     max_tokens: 1024,
-    repeat_penalty: 1.1,
-    top_p: 0.95,
-    top_k: 20,
+    seed: 42,
+    dry_allowed_length: 64,
+    #top_p: 0.95,
+    #top_k: 20,
     stream: true,
-    temperature: 1
+    temperature: 0.7
   }.to_json
 
   begin
@@ -136,7 +176,12 @@ def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
                     bracket_count -= 1
                     current_json += char
                     if bracket_count == 0 && !current_json.strip.empty?
-                      block.call(current_json)
+                      if options[:edit]
+                        edited_json = edit_response_with_timeout(current_json, options[:timeout])
+                        block.call(edited_json)
+                      else
+                        block.call(current_json)
+                      end
                       return
                     end
                   else
@@ -156,12 +201,11 @@ def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
       logger.error("Unmatched brackets in LLM response")
     end
   rescue StandardError => e
-    logger.error("Error querying LLM: #{e}")
-    { 'reasoning' => 'Error querying LLM.', 'keypresses' => [], 'mission_complete' => false, 'new_scratchpad' => 'Error occurred during LLM query.', 'next_step' => 'Reattempt or manual intervention required.' }
+    full_response
   end
 end
 
-def build_prompt(mission, scratchpad, terminal_state, options)
+def build_prompt(mission, history, terminal_state, options)
   cursor_position = terminal_state[:cursor]
   terminal_content = terminal_state[:content]
 
@@ -177,6 +221,8 @@ def build_prompt(mission, scratchpad, terminal_state, options)
   Note: 
   - The terminal output has been prepended with line numbers by the system to help track position. These are not part of the actual terminal content.
   - The block symbol '█' indicates the current cursor position.
+  - History is compacted periodically by the system every #{options[:history_limit]} entries
+  - In order to preserve your progress (especially involving on any lists of things), you must place that information in new_scratchpad or next_step.
 
   Instructions:
   - On each step, create a plan and then provide the key presses needed.
@@ -202,8 +248,8 @@ def build_prompt(mission, scratchpad, terminal_state, options)
   Mission history (older entries are at the top, new entries at the bottom):
   -----------------------------------------------------------------------------------
 
-  #{scratchpad}
-  <new_scratchpad will be here>
+  #{history}
+  <new entry with cursor position, terminal state, new_scratchpad, keypresses and next_step will be added here>
   -----------------------------------------------------------------------------------
 
   -----------------------------------------------------------------------------------
@@ -213,7 +259,7 @@ def build_prompt(mission, scratchpad, terminal_state, options)
 
   #{mission}
 
-  Are we on the right track? Use scratchpad to verify and plan the next steps.
+  Are we on the right track? Use scratchpad_new and next_step to verify and plan the next steps.
   -----------------------------------------------------------------------------------
   CURRENT TERMINAL STATE FOR YOUR ANALYSIS:
   -----------------------------------------------------------------------------------
@@ -226,6 +272,34 @@ def build_prompt(mission, scratchpad, terminal_state, options)
   Your response based on the current terminal state, mission, and mission history:
   ```json
   PROMPT
+end
+
+def build_summarization_prompt(full_log, mission)
+  <<~SUMMARY_PROMPT
+  You are tasked with summarizing a log of a tool called 'pllm' which helps the user accomplish a mission by providing keypress suggestions into user's terminal.
+
+  The log contains detailed information about the interactions between the user and the AI system during the mission.
+
+  Your output should serve as one summarizing entry in the Full log for the next iteration of the 'pllm' tool run.
+
+  Extract the overall plan, substeps of the plan, steps already completed, and any issues encountered during the mission from the log.
+  
+  Please provide a condensed summary of the current status based on log below.
+
+  ------------------------------------------------------------------------------------
+  Full Log:
+  ------------------------------------------------------------------------------------
+  #{full_log}
+  ------------------------------------------------------------------------------------
+  
+  Respond only with bullet points, not full sentences. Make sure to use new lines properly.
+
+  Produce the summarized condensed version right after summary =. Once you're done with summary =, we're done.
+
+  YOUR REPORT
+  ===========
+  summary =
+  SUMMARY_PROMPT
 end
 
 def valid_llm_response?(response)
@@ -242,27 +316,44 @@ end
 logger = Logger.new(LOG_FILE, 'daily')
 logger.level = Logger::DEBUG
 
-options = {}
+options = {:accumulate => false, :edit => false, :timeout => 5, :history_limit => 15}
 OptionParser.new do |opts|
   opts.banner = "Usage: ruby script.rb [options]"
   opts.on("-a", "--accumulate", "Accumulate responses for subsequent prompts") do |a|
     options[:accumulate] = a
   end
+  opts.on("-e", "--edit[=SECONDS]", Integer, "Allow editing of LLM response before use, with optional timeout in seconds (default 5)") do |e|
+    options[:edit] = true
+    options[:timeout] = e || 5
+  end
+  opts.on("-l", "--history-limit=LIMIT", Integer, "Limit the number of entries in the scratchpad history (default 10)") do |l|
+    options[:history_limit] = l || 15
+  end
 end.parse!
 
-scratchpad = ""
-session_name = "pllm-#{SecureRandom.uuid}"
+uuid = SecureRandom.uuid
+session_name = "pllm-#{uuid[0,8]}"
+history = ""
+history_length = 0
+iteration = 0
 mission_complete = false
 
+logger.formatter = proc do |severity, datetime, progname, msg|
+  "[#{session_name}] #{datetime} - #{severity}: #{msg}\n"
+end
+
 begin
+  logger.info("")
+  logger.info("Starting PLM session: #{session_name}")
   create_tmux_session(session_name, logger)
 
   until mission_complete
+    iteration += 1
     terminal_state = capture_tmux_output(session_name)
-    prompt = build_prompt(MISSION, scratchpad, terminal_state, options)
+    prompt = build_prompt(MISSION, history, terminal_state, options)
     system("clear")
+    logger.info("Running iteration #{iteration}")
     puts prompt
-    logger.info("Sending prompt to LLM")
 
     query_llm(LLAMA_API_ENDPOINT, prompt, terminal_state, options, logger) do |json_response|
       begin
@@ -275,36 +366,44 @@ begin
           new_scratchpad = parsed_response['new_scratchpad']
           next_step = parsed_response['next_step']
 
-          logger.info("LLM Reasoning: #{reasoning}")
-          logger.info("LLM Keypresses: #{keypresses_fmt}")
-          logger.info("Mission Complete? #{mission_complete}")
-
-          if keypresses.empty? && !mission_complete
-            logger.warn("No keypresses provided, skipping this iteration.")
-            next
-          end
+          logger.info("\n#{prompt}\n{#{json_response}}")
 
           # Update scratchpad with cursor position
           timestamp = Time.now.utc.iso8601
           cursor_position = terminal_state[:cursor]
-          scratchpad += "\n[#{timestamp}]\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\nTerminal State:\n#{terminal_state[:content]}\nScratchpad entry: #{new_scratchpad}\nKeypresses: #{keypresses_fmt}\nMission Complete: #{mission_complete}\nReasoning: #{reasoning}\nNext Step: #{next_step}\n\n"
+          history += "\n[#{timestamp}]\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\nTerminal State:\n#{terminal_state[:content]}\nScratchpad entry: #{new_scratchpad}\nKeypresses: #{keypresses_fmt}\nNext Step: #{next_step}\n\n"
+          history_length += 1
+
+          # Update history length and condense if needed
+          if history_length > options[:history_limit]
+            logger.info("Summarizing history due to history limit")
+            summarization_prompt = build_summarization_prompt(history, MISSION)
+            puts summarization_prompt
+            query_llm(LLAMA_API_ENDPOINT, summarization_prompt, terminal_state, options, logger) do |summary|
+              history = summary
+              history_length = 0
+            end
+            logger.info("Summarized history:\n#{history}")
+          end
 
           unless keypresses.empty?
             send_keys_to_tmux(session_name, keypresses, logger)
-            sleep(2) # Allow some time for command execution
-            new_state = capture_tmux_output(session_name)
-            logger.info("Post-Keypress Terminal State: #{new_state[:content][0..100]}...")
           end
+
+          sleep 1 # Allow some time for command execution
+
+          new_state = capture_tmux_output(session_name)
+          logger.info("Post-Keypress Terminal State:\n#{new_state[:content]}")
 
           break if mission_complete
         else
           puts "Invalid LLM response format. Please check the response for errors."
-          scratchpad += "\n[#{Time.now.utc.iso8601}] System Error\nYour response format was invalid: #{parsed_response}\n\n"
+          history += "\n[#{Time.now.utc.iso8601}] System Error\nYour response format was invalid: #{parsed_response}\n\n"
           logger.error("Invalid LLM response format: #{parsed_response}")
         end
       rescue JSON::ParserError => e
         puts "Failed to parse LLM response. Please check the response for errors."
-        scratchpad += "\n[#{Time.now.utc.iso8601}] System Error\nFailed to parse your response: #{e.message} - the raw response was: #{json_response}\n\n"
+        history += "\n[#{Time.now.utc.iso8601}] System Error\nFailed to parse your response: #{e.message} - the raw response was: #{json_response}\n\n"
         logger.error("Failed to parse LLM response: #{e.message}")
       end
     end
