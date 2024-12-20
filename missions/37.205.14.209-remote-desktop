@@ -1,0 +1,32 @@
+At IP address 37.205.14.209, there is a machine called RemoteUbuDesktop.
+
+It is a vpsFree.cz VPS running on a vpsAdminOS node. As it comes from the original vpsFree templates, which are just bare bones SSH to root and nothing else, we have some work to do.
+
+I have uploaded my SSH key to root's authorized keys, so you can reach it at root@37.205.14.209.
+
+I would like you to help me setup a remote desktop with default ubuntu desktop experience available via RDP.
+
+I've read a Reddit post that said remote desktop could enabled via CLI in this fashion:
+
+```
+export GRDCERTDIR=~/.cert
+mkdir -p ${GRDCERTDIR}
+openssl genrsa -out ${GRDCERTDIR}/grd-tls.key 4096
+openssl req -new -key ${GRDCERTDIR}/grd-tls.key -out ${GRDCERTDIR}/grd-tls.csr -subj "/C=DE/ST=Private/L=Home/O=Family/OU=IT Department/CN=ubuntu-live"
+openssl x509 -req -days 100000 -signkey ${GRDCERTDIR}/grd-tls.key -in ${GRDCERTDIR}/grd-tls.csr -out ${GRDCERTDIR}/grd-tls.crt
+# Now the actual enable process: 
+grdctl rdp enable
+grdctl rdp set-credentials $USER $PASSWORD
+# more on the $PASSWORD later
+grdctl rdp disable-view-only
+grdctl rdp set-tls-cert ${GRDCERTDIR}/grd-tls.crt
+grdctl rdp set-tls-key ${GRDCERTDIR}/grd-tls.key
+systemctl --user enable gnome-remote-desktop.service
+systemctl --user restart gnome-remote-desktop.service
+```
+
+As I said, it's a minimal installation with only a root user. You need to install all of what that Reddit post mentioned too, along the full Ubuntu desktop.
+
+I would like you to set up an ordinary user for me, called snajpa with password snajpaDesktop123
+
+Thank you!
