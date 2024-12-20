@@ -18,4 +18,4 @@ Run the program with the following options:
 ## Example
 
 ```sh
-ruby pllm.rb -l http://example.com/api -m <mission_file>
+ruby pllm.rb -l 5 -m <mission_file>
