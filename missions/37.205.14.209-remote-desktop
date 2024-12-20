@@ -31,8 +31,8 @@ From what I've tried, it would seem that the desktop needs to be installed and r
 
 As I said, it's a minimal installation with only a root user. You need to install all of what that Reddit post mentioned too, along the full Ubuntu desktop.
 
-I would like you to set up an ordinary user for me, called snajpa, password PazzWeierdoz213
+I would like you to set up an ordinary user for me, called snajpa, with password PazzWeierdoz213
 
-I would like to access the remote desktop via this snajpa user. Also add the user to the wheel group, it should be allowed to use sudo.
+I would like to access the remote desktop via this snajpa user. Also add the user to the sudo group, it should be allowed to use sudo.
 
 Please ensure that the configuration we do is persistent and all the desktopy stuff starts on boot.
