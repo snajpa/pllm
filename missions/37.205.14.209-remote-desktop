@@ -1,32 +1,184 @@
-At IP address 37.205.14.209, there is a machine called RemoteUbuDesktop.
+## 1. Connect to the Remote Machine
 
-It is a vpsFree.cz VPS running on a vpsAdminOS node. As it comes from the original vpsFree templates, which are just bare bones SSH to root and nothing else, we have some work to do.
-
-I have uploaded my SSH key to root's authorized keys, so you can reach it at root@37.205.14.209.
-
-I would like you to help me setup a remote desktop with default ubuntu desktop experience available via RDP.
-
-I've read a Reddit post that said remote desktop could enabled via CLI in this fashion:
-
+```bash
+ssh root@37.205.14.209
 ```
-export GRDCERTDIR=~/.cert
-mkdir -p ${GRDCERTDIR}
-openssl genrsa -out ${GRDCERTDIR}/grd-tls.key 4096
-openssl req -new -key ${GRDCERTDIR}/grd-tls.key -out ${GRDCERTDIR}/grd-tls.csr -subj "/C=DE/ST=Private/L=Home/O=Family/OU=IT Department/CN=ubuntu-live"
-openssl x509 -req -days 100000 -signkey ${GRDCERTDIR}/grd-tls.key -in ${GRDCERTDIR}/grd-tls.csr -out ${GRDCERTDIR}/grd-tls.crt
-# Now the actual enable process: 
-grdctl rdp enable
-grdctl rdp set-credentials $USER $PASSWORD
-# more on the $PASSWORD later
-grdctl rdp disable-view-only
-grdctl rdp set-tls-cert ${GRDCERTDIR}/grd-tls.crt
-grdctl rdp set-tls-key ${GRDCERTDIR}/grd-tls.key
+
+## 2. Update the System
+
+```bash
+apt update
+apt upgrade -y
+```
+
+## 3. Install Ubuntu Desktop Environment and Remote Desktop Tools
+
+Install the full Ubuntu desktop environment and the `gnome-remote-desktop` package:
+
+```bash
+apt install -y ubuntu-desktop gnome-remote-desktop openssl
+```
+
+## 4. Create a New User Account
+
+Create a user `snajpa` with sudo privileges:
+
+```bash
+adduser snajpa
+```
+
+- **Password:** `PazzWeierdoz213`  
+- Press **Enter** for other prompts.
+
+Add the user to the `sudo` group:
+
+```bash
+usermod -aG sudo snajpa
+```
+
+## 5. Reboot the Machine
+
+```bash
+reboot
+```
+
+After reboot, connect as the `snajpa` user:
+
+```bash
+ssh snajpa@37.205.14.209
+```
+
+## 6. Start a Graphical Session
+
+To ensure the X server is running, you need to start a graphical session. If you're accessing the VPS via SSH, this step is necessary to configure the desktop properly.
+
+### Using `Xvfb` (Virtual Framebuffer)
+
+If no physical display is available, you can use `Xvfb` to create a virtual display:
+
+1. **Install `Xvfb`:**
+
+   ```bash
+   sudo apt install -y xvfb
+   ```
+
+2. **Start `Xvfb`:**
+
+   ```bash
+   Xvfb :1 -screen 0 1920x1080x24 &
+   ```
+
+3. **Set the `DISPLAY` environment variable:**
+
+   ```bash
+   export DISPLAY=:1
+   ```
+
+## 7. Configure Remote Desktop Using `gsettings`
+
+### 7.1 Generate TLS Key and Certificate
+
+1. **Create a Directory for Certificates:**
+
+   ```bash
+   mkdir -p ~/.cert
+   ```
+
+2. **Generate a 4096-bit RSA Key:**
+
+   ```bash
+   openssl genrsa -out ~/.cert/grd-tls.key 4096
+   ```
+
+3. **Generate a Certificate Signing Request (CSR):**
+
+   ```bash
+   openssl req -new -key ~/.cert/grd-tls.key -out ~/.cert/grd-tls.csr -subj "/C=DE/ST=Private/L=Home/O=Family/OU=IT Department/CN=ubuntu-live"
+   ```
+
+4. **Generate a Self-Signed Certificate:**
+
+   ```bash
+   openssl x509 -req -days 100000 -signkey ~/.cert/grd-tls.key -in ~/.cert/grd-tls.csr -out ~/.cert/grd-tls.crt
+   ```
+
+### 7.2 Enable Remote Desktop via `gsettings`
+
+Run the following commands to enable RDP access and set credentials:
+
+```bash
+gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+gsettings set org.gnome.desktop.remote-desktop.rdp view-only false
+gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert "~/.cert/grd-tls.crt"
+gsettings set org.gnome.desktop.remote-desktop.rdp tls-key "~/.cert/grd-tls.key"
+```
+
+### 7.3 Set Credentials
+
+Set the RDP username and password:
+
+```bash
+gnome-remote-desktop set-credentials snajpa PazzWeierdoz213
+```
+
+### 7.4 Enable and Restart the Service
+
+```bash
 systemctl --user enable gnome-remote-desktop.service
 systemctl --user restart gnome-remote-desktop.service
 ```
 
-As I said, it's a minimal installation with only a root user. You need to install all of what that Reddit post mentioned too, along the full Ubuntu desktop.
+## 8. Ensure Configuration is Persistent
 
-I would like you to set up an ordinary user for me, called snajpa with password snajpaDesktop123
+Confirm the service is enabled:
 
-Thank you!
+```bash
+systemctl --user is-enabled gnome-remote-desktop.service
+```
+
+---
+
+## Summary of Key Commands
+
+```bash
+# Connect to machine
+ssh root@37.205.14.209
+
+# System update and desktop installation
+apt update && apt upgrade -y
+apt install -y ubuntu-desktop gnome-remote-desktop openssl xvfb
+
+# Create user and assign sudo privileges
+adduser snajpa
+usermod -aG sudo snajpa
+
+# Reboot and reconnect
+reboot
+ssh snajpa@37.205.14.209
+
+# Start virtual display
+Xvfb :1 -screen 0 1920x1080x24 &
+export DISPLAY=:1
+
+# Generate TLS certificates
+mkdir -p ~/.cert
+openssl genrsa -out ~/.cert/grd-tls.key 4096
+openssl req -new -key ~/.cert/grd-tls.key -out ~/.cert/grd-tls.csr -subj "/C=DE/ST=Private/L=Home/O=Family/OU=IT Department/CN=ubuntu-live"
+openssl x509 -req -days 100000 -signkey ~/.cert/grd-tls.key -in ~/.cert/grd-tls.csr -out ~/.cert/grd-tls.crt
+
+# Configure remote desktop
+gsettings set org.gnome.desktop.remote-desktop.rdp enable true
+gsettings set org.gnome.desktop.remote-desktop.rdp view-only false
+gsettings set org.gnome.desktop.remote-desktop.rdp tls-cert "~/.cert/grd-tls.crt"
+gsettings set org.gnome.desktop.remote-desktop.rdp tls-key "~/.cert/grd-tls.key"
+
+gnome-remote-desktop set-credentials snajpa PazzWeierdoz213
+
+# Enable and restart service
+systemctl --user enable gnome-remote-desktop.service
+systemctl --user restart gnome-remote-desktop.service
+```
+
+---
+
+This should complete the remote desktop setup, even in a headless environment.

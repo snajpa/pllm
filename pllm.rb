@@ -143,12 +143,8 @@ def query_llm(endpoint, prompt, terminal_state, options, logger, &block)
   request.body = {
     prompt: prompt,
     max_tokens: 384,
-    repeat_penalty: 1.1,
-    repeat_last_n: 128,
-    #top_p: 0.95,
-    #top_k: 20,
     stream: true,
-    temperature: 0.3
+    temperature: 0.8
   }.to_json
 
   json_found = false
@@ -257,6 +253,8 @@ def build_prompt(mission, history, terminal_state, options, iteration_n)
   - After program completes, shell returns back the PS1 prompt. Do not get confused by old history in the console.
   - If an output of a command calls a pager, navigate the user through the pager to show all the relevant parts of the output, don't be satisfied with one run if there might be more important data below.
   - The block symbol '█' indicates the current cursor position.
+  - Find the latest output in the terminal and attend to it. All the previous output is history by now, which you can use to inform yourself, but you should act on the most recent lines only.
+  - Make sure you're working with the latest shell prompt, otherwise you tend to modify older content, which is bad.
 
   Instructions for issuing keypresses:
   - On each step, create a plan and then provide the key presses needed.
