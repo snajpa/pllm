@@ -60,6 +60,7 @@ def build_prompt(mission, history, console_state, options, iteration_n)
   - You are guiding the user through an interactive console session.
   - Carefully identify the current state of the mission, plan the next steps, and suggest key presses to help the user progress.
   - At the beginning of the mission, it is a good idea to start by thinking about the overall plan and breaking it down into smaller steps, no need to issue key presses immediately.
+  - It is a good idea to note how the system prompt (PS1) looks like and take a note when it changes.
 
   Instructions for operating the console session:
   - The console output is always prepended with line numbers by the system for your convenience. These are not part of the actual console content.
@@ -182,8 +183,8 @@ def build_summarization_prompt(full_log, mission, console_state)
   Report format instructions:
   - use only brief bullet points, not full paragraphs.
   - be sure to use a new line after each bullet point.
-
-  Produce the summarized condensed version right after "Summary:". After you're done with the Summary, we're done.
+  - produce the summarized condensed version right after "Summary:"
+  - when you're done with the Summary, you can end the report with "END SUMMARY"
 
   REPORT
   ======
