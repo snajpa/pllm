@@ -6,7 +6,7 @@ class LLM
     @editor = editor
     @default_params = default_params
   end
-  def query(prompt, params = {}, &block)
+  def query(prompt, params = {}, stop_at = nil, &block)
     params = @default_params.merge(params)
     uri = @uri.dup
     request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
@@ -33,7 +33,9 @@ class LLM
                   print content
                   $stdout.flush
                   full_response += content
-
+                  if stop_at && full_response.include?(stop_at)
+                    return full_response
+                  end
                   # Track brackets for JSON extraction
                   content.each_char do |char|
                     case char

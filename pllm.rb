@@ -13,8 +13,8 @@ require './lib/llm'
 require './lib/tmux'
 
 # --- Constants ---
-WINDOW_X = 80
-WINDOW_Y = 24
+WINDOW_X = 120
+WINDOW_Y = 30
 LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
 DEFAULT_MISSION = '
 
@@ -49,18 +49,17 @@ def build_prompt(mission, history, console_state, options, iteration_n)
 
   For each iteration, you will receive the current console state, mission, and history of the user's actions. You will need to analyze the information and suggest key presses to help the user progress towards the mission.
 
-  Notes about the system you're operating in: 
-  - History is compacted periodically by the system every #{options[:history_limit]} entries
-  - In order to preserve your progress (especially involving on any lists of things), you must place that information in new_scratchpad or next_step.
-  - This also implies that you always have #{options[:history_limit]} iterations to explore a single coherent path of actions.
-  - Currently you have #{if options[:history_limit] > 1 then (options[:history_limit] - (iteration_n % options[:history_limit])) else 0 end} iterations to finish your current line of thought.
-  - Your output will be cut after 384 tokens for each iteration.
-
   Instructions for achieving the user's mission:
   - You are guiding the user through an interactive console session.
   - Carefully identify the current state of the mission, plan the next steps, and suggest key presses to help the user progress.
   - At the beginning of the mission, it is a good idea to start by thinking about the overall plan and breaking it down into smaller steps, no need to issue key presses immediately.
   - It is a good idea to note how the system prompt (PS1) looks like and take a note when it changes.
+
+  Notes about the system you're operating in: 
+  - History is compacted periodically by the system every #{options[:history_limit]} entries
+  - In order to preserve your progress (especially involving on any lists of things), you must place that information in new_scratchpad or next_step.
+  - This also implies that you always have #{options[:history_limit]} iterations to explore a single coherent path of actions.
+  - Currently you have #{if options[:history_limit] > 1 then (options[:history_limit] - (iteration_n % options[:history_limit])) else 0 end} iterations to finish your current line of thought.
 
   Instructions for operating the console session:
   - The console output is always prepended with line numbers by the system for your convenience. These are not part of the actual console content.
@@ -79,12 +78,12 @@ def build_prompt(mission, history, console_state, options, iteration_n)
   Instructions for issuing keypresses:
   - On each step, create a plan and then provide the key presses needed.
   - Normal characters: "a", "b", "c", "A", "B", "C", "1", "2", ".", " ", "\"", etc.
-  - Special named keys: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
+  - Special named keys, read carefully, use literally: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
   - Ctrl keys: Use C- notation for Ctrl keys. For example, "C-c" for Ctrl+c, "C-r" for Ctrl+r, etc.
   - Alt keys: Use M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
   - Send uppercase letters directly as uppercase. No need for Shift notation.
   - If you need multiple steps, output them in a single "keypresses" array, one key per element.
-  - Avoid using "C-d" to exit the shell, as it might terminate the console session.
+  - You are forbidden to use "C-d". If you need to exit a shell, use "C-c" to interrupt the current process and then "exit" to exit the shell.
   - If you intend there to be a space between command and/or arguments, spell it out as "Space".
   - If you need to issue a command, provide the key presses to type the command and then "Enter" to execute it.
   - No command chaining in one iteration, only one command per iteration.
@@ -162,7 +161,7 @@ def build_summarization_prompt(full_log, mission, console_state)
   
   Please provide a condensed summary of the current status based on log below.
 
-  Work in reverse chronological order, starting from the most recent entry. Your output will be cut after 384 tokens.
+  Work in reverse chronological order, starting from the most recent entry.
 
   ------------------------------------------------------------------------------------
   Full Log:
@@ -183,8 +182,8 @@ def build_summarization_prompt(full_log, mission, console_state)
   Report format instructions:
   - use only brief bullet points, not full paragraphs.
   - be sure to use a new line after each bullet point.
-  - produce the summarized condensed version right after "Summary:"
-  - when you're done with the Summary, you can end the report with "END SUMMARY"
+  - produce the summarized condensed version right after "Summary:".
+  - when you're done with the Summary, end the report with "END SUMMARY" and we're done.
 
   REPORT
   ======
@@ -239,7 +238,7 @@ end
 
 llm = LLM.new(logger,
               LLAMA_API_ENDPOINT, options, ENV['EDITOR'],
-              { max_tokens: 384, temperature: 0.8})
+              { max_tokens: 384, temperature: 0.4 })
 tmux = Tmux.new(session_name, WINDOW_X, WINDOW_Y)
 
 begin
@@ -287,7 +286,7 @@ begin
             logger.info("Summarizing history due to history limit")
             summarization_prompt = build_summarization_prompt(history, options[:mission], new_state)
             puts summarization_prompt
-            summary = llm.query(summarization_prompt)
+            summary = llm.query(summarization_prompt, { max_tokens: 390, temperature: 0.9 }, "END SUMMARY")
             history = "\nSummary of older entries:\n#{summary}\n\n"
             history_length = 0
 
