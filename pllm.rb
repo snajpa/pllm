@@ -1,3 +1,4 @@
+#!/usr/bin/env ruby
 require 'securerandom'
 require 'net/http'
 require 'uri'
@@ -13,6 +14,9 @@ require './lib/llm'
 require './lib/tmux'
 
 # --- Constants ---
+REEVAL_TIMES = 3
+EDIT_TIMEOUT = 5
+HISTORY_LIMIT = 5
 WINDOW_X = 120
 WINDOW_Y = 30
 LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
@@ -38,7 +42,7 @@ Pro-tips:
 '
 LOG_FILE = 'pllm.log'
 
-def build_prompt(mission, history, console_state, options, iteration_n)
+def build_main_prompt(mission, history, console_state, options, iteration_n)
   cursor_position = console_state[:cursor]
   console_content = console_state[:content]
 
@@ -159,9 +163,7 @@ def build_summarization_prompt(full_log, mission, console_state)
 
   Pay close attention to any repetitive behavior which doesn't seem to be making progress. Deduce the reason and suggest a solution.
   
-  Please provide a condensed summary of the current status based on log below.
-
-  Work in reverse chronological order, starting from the most recent entry.
+  Provide a condensed summary of the current status based on log below.
 
   ------------------------------------------------------------------------------------
   Full Log:
@@ -180,16 +182,150 @@ def build_summarization_prompt(full_log, mission, console_state)
   -----------------------------------------------------------------------------------
 
   Report format instructions:
-  - use only brief bullet points, not full paragraphs.
+  - use only very brief bullet points, not full paragraphs, condense the points as much as possible.
   - be sure to use a new line after each bullet point.
-  - produce the summarized condensed version right after "Summary:".
-  - when you're done with the Summary, end the report with "END SUMMARY" and we're done.
+  - produce the summarized condensed version of this history right after "Summary:".
+  - when you're done with the Summary, end the report with "END_SUMMARY" and we're done.
+  - you are limited to 390 characters, so be concise.
 
   REPORT
   ======
 
   Summary:
   SUMMARY_PROMPT
+end
+
+def build_eval_prompt(response, mission, console_state)
+  cursor_position = console_state[:cursor]
+  console_content = console_state[:content]
+
+  prompt = \
+  <<~EVAL_PROMPT
+  You are tasked with evaluating a response from the system called 'pllm'. The system's goal is to help the user accomplish a mission by providing keypress suggestions into user's console.
+
+  The user's mission:
+  --
+  #{mission}
+  --
+
+  Pllm has provided suggestions to our user. Your task is to evaluate the suggestions based on the current console state and the user's mission.
+
+  Current console window size: (#{WINDOW_X}, #{WINDOW_Y})
+  Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
+  Current console state:
+  #{console_content}
+
+  The response from pllm:
+  Reasoning: #{response['reasoning']}
+  Keypresses array: #{response['keypresses']}
+  Mission complete: #{response['mission_complete']}
+  New scratchpad: #{response['new_scratchpad']}
+  Next step: #{response['next_step']}
+
+  Will the suggested keypresses really deliver what was intended or could there be a mistake? For example, when the user is supposed to press Enter, you can't suggest pressing E, then n, then t, then e, then r. That's not the same as pressing Enter.
+
+  Try to meditate on each individual press and its effect on the console state. Is the reasoning behind every individual key press sound?
+
+  Isn't there any ommision in the keypresses? Is there any keypress that is not necessary?
+
+  Be very careful and precise in your evaluation. The user's mission depends on it. But be quick, the user is waiting for your evaluation.
+
+  Your output will be cut off after 390 characters, so be concise.
+
+  After you're done, end with "END_EVALUATION".
+
+  EVALUATION:
+  EVAL_PROMPT
+end
+
+def build_select_prompt(options, responses, mission, keypresses_history, console_state, previous_next_step)
+  cursor_position = console_state[:cursor]
+  console_content = console_state[:content]
+
+  prompt = \
+  <<~SELECT_PROMPT
+  You are tasked with selecting the best response from the LLM agent called 'pllm'. The agent's goal is to help the user accomplish a mission by providing keypress suggestions into user's console.
+
+  The agent has provided multiple responses to a single prompt. Your task is to select the best response based on the context of the mission and the user's progress.
+
+  It is possible that the agent made mistakes or provided incorrect suggestions.
+
+  Analyze the responses and select the one that best aligns with the mission and the user's progress.
+
+  Instructions for operating the console session:
+  - The console output is always prepended with line numbers by the system for your convenience. These are not part of the actual console content.
+  - The console window size is #{WINDOW_X} columns by #{WINDOW_Y} rows.
+  - There are no scrollbars, so the console content is limited to the visible area.
+  - The console content is updated in real-time, and you can issue key presses to interact with the console.
+  - The cursor position is indicated by the block symbol '█'.
+  - Avoid batching multiple commands. Issue one command at a time and wait for the console to update.
+  - Expect when a command can invoke an interactive editor or a pager.
+  - Ensure proper navigation in interactive programs like editors, pagers, etc.
+  - Beware if a command invokes a pager, navigate the user through the pager to show all the relevant parts of the output, don't be satisfied with one run if there might be more important data below.
+  - Asses whether the user is in a pager or an editor and act accordingly.
+  - The block symbol '█' indicates the current cursor position.
+
+  Instructions for issuing keypresses:
+  - Normal characters: "a", "b", "c", "A", "B", "C", "1", "2", ".", " ", "\"", etc.
+  - Special named keys, read carefully, use literally: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
+  - Ctrl keys: Use C- notation for Ctrl keys. For example, "C-c" for Ctrl+c, "C-r" for Ctrl+r, etc.
+  - Alt keys: Use M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
+  - Send uppercase letters directly as uppercase. No need for Shift notation.
+  - If you need multiple steps, output them in a single "keypresses" array, one key per element.
+  - You are forbidden to use "C-d". If you need to exit a shell, use "C-c" to interrupt the current process and then "exit" to exit the shell.
+  - If you intend there to be a space between command and/or arguments, spell it out as "Space".
+  - If you need to issue a command, provide the key presses to type the command and then "Enter" to execute it.
+  - No command chaining in one iteration, only one command per iteration.
+  - Example sequences:
+    - ["l", "s", "Enter"]
+    - ["C-c"]
+    - ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", "'", "Enter"]
+
+  User's Mission:
+
+  The user's end goal is to:
+  --
+  #{mission}
+  --
+
+  CURRENT CONSOLE STATE FOR YOUR ANALYSIS:
+     | Console window wize: (#{WINDOW_X}, #{WINDOW_Y})
+     | Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
+  #{console_content}
+
+
+  Please select the best suitable response from these, reply with the number of the response.
+
+  SELECT_PROMPT
+
+  responses.each_with_index do |response, index|
+    prompt += "Response ##{index + 1}\n"
+    prompt += "Response #{index + 1} keypresses: #{response['keypresses']}\n"
+    prompt += "Response #{index + 1} reasoning: #{response['reasoning']}\n"
+    prompt += "Response #{index + 1} evaluation from an external critic: #{response['critic_evaluation']}\n" if options[:critic]
+    prompt += "\n"
+  end
+
+  prompt += <<~SELECT_PROMPT
+
+  Please provide the number of the best response given the context of the mission and the current state of the console.
+
+  SELECT_PROMPT
+  if previous_next_step != ""
+    prompt += <<~SELECT_PROMPT
+    To help you make a better decision, here's what pllm was planning in this step:
+
+    "#{previous_next_step}".
+    SELECT_PROMPT
+  end
+  prompt += <<~SELECT_PROMPT
+
+  So, given all this information, choose the best response number and provide it as a single number.
+
+  The best response number is:
+  SELECT_PROMPT
+
+  prompt
 end
 
 def valid_llm_response?(response)
@@ -206,31 +342,62 @@ end
 logger = Logger.new(LOG_FILE, 'daily')
 logger.level = Logger::DEBUG
 
-options = {:accumulate => false, :edit => false, :timeout => 5, :history_limit => 15, :mission => DEFAULT_MISSION}
+options = {
+  accumulate: false,
+  edit: false,
+  timeout: EDIT_TIMEOUT,
+  history_limit: HISTORY_LIMIT,
+  mission: DEFAULT_MISSION,
+  reeval_times: REEVAL_TIMES,
+  critic: false,
+  help: false
+}
+
+help_text = ""
 OptionParser.new do |opts|
-  opts.banner = "Usage: ruby script.rb [options]"
+  opts.banner = "Usage: pllm.rb [options]"
   opts.on("-a", "--accumulate", "Accumulate responses for subsequent prompts") do |a|
     options[:accumulate] = a
   end
   opts.on("-e", "--edit[=SECONDS]", Integer, "Allow editing of LLM response before use, with optional timeout in seconds (default 5)") do |e|
     options[:edit] = true
-    options[:timeout] = e || 5
+    options[:timeout] = e || EDIT_TIMEOUT
   end
   opts.on("-l", "--history-limit=LIMIT", Integer, "Limit the number of entries in the scratchpad history (default 10)") do |l|
-    options[:history_limit] = l || 15
+    options[:history_limit] = l
   end
-  opts.on("-m", "--mission=options[:mission]_FILE", "Load mission from a file") do |m|
+  opts.on("-m", "--mission=MISSION_FILE", "Load mission from a file") do |m|
     mission = File.read(m)
     options[:mission] = mission
   end
+  opts.on("-r", "--reeval-times=TIMES", Integer, "Number of times to reevaluate a response (default 3)") do |r|
+    options[:reeval_times] = r
+  end
+  opts.on("-c", "--critic", "Enable critic evaluation of responses") do |c|
+    options[:critic] = c
+  end
+  opts.on("-h", "--help", "Prints this help") do
+    options[:help] = true
+  end
+  help_text = opts.to_s
 end.parse!
+
+if options[:help]
+  puts help_text
+  exit
+end
 
 uuid = SecureRandom.uuid
 session_name = "pllm-#{uuid[0,8]}"
+summaries = []
 history = ""
 history_length = 0
 iteration = 0
 mission_complete = false
+parsed_responses = []
+evaluated_responses = []
+keypresses_history = []
+previous_next_step = ""
 
 logger.formatter = proc do |severity, datetime, progname, msg|
   "[#{session_name}] #{datetime} - #{severity}: #{msg}\n"
@@ -238,7 +405,7 @@ end
 
 llm = LLM.new(logger,
               LLAMA_API_ENDPOINT, options, ENV['EDITOR'],
-              { max_tokens: 384, temperature: 0.4 })
+              { n_predict: 384, temperature: 0.95 })
 tmux = Tmux.new(session_name, WINDOW_X, WINDOW_Y)
 
 begin
@@ -246,65 +413,114 @@ begin
   logger.info("Starting PLM session: #{session_name}")
 
   until mission_complete
+    parsed_responses = []
+    evaluated_responses = []
+    selected_response = nil
     iteration += 1
     console_state = tmux.capture_output
-    prompt = build_prompt(options[:mission], history, console_state, options, iteration)
+    prompt = build_main_prompt(options[:mission], history, console_state, options, iteration)
     system("clear")
     logger.info("Running iteration #{iteration}")
-    puts prompt
+    puts console_state[:content]
 
-    llm.query(prompt) do |json_response|
-      begin
-        parsed_response = JSON.parse(json_response)
-        if valid_llm_response?(parsed_response)
-          reasoning = parsed_response['reasoning']
-          keypresses = parsed_response['keypresses'] || []
-          keypresses_fmt = keypresses.map { |key| "\"#{key}\"" }.join(', ')
-          mission_complete = parsed_response['mission_complete']
-          new_scratchpad = parsed_response['new_scratchpad']
-          next_step = parsed_response['next_step']
-
-          logger.info("\n#{prompt}\n{#{json_response}}")
-
-          # Update scratchpad with cursor position
-          timestamp = Time.now.utc.iso8601
-          cursor_position = console_state[:cursor]
-          history += "\n[#{timestamp}]\nCursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\nConsole State:\n#{console_state[:content]}\nScratchpad entry: #{new_scratchpad}\nKeypresses: #{keypresses_fmt}\nNext Step: #{next_step}\n\n"
-          history_length += 1
-
-          unless keypresses.empty?
-            tmux.send_keys(keypresses)
+    options[:reeval_times].times do |i|
+      parsed_response = nil
+      evaluated_response = nil
+      puts "\nQuerying LLM to get the next suggestions... (#{i+1}/#{options[:reeval_times]})"
+      llm.query(prompt, {}) do |json_response|
+        begin
+          parsed_response = JSON.parse(json_response)
+          if valid_llm_response?(parsed_response)
+            logger.info("\n#{prompt}\n{#{json_response}}")
+            parsed_responses << parsed_response
           end
-
-          sleep 2 # Give time for the shell to process the key presses
-
-          new_state = tmux.capture_output
-          logger.info("Post-Keypress Console State:\n#{new_state[:content]}")
-
-          # Update history length and condense if needed
-          if history_length >= options[:history_limit]
-            logger.info("Summarizing history due to history limit")
-            summarization_prompt = build_summarization_prompt(history, options[:mission], new_state)
-            puts summarization_prompt
-            summary = llm.query(summarization_prompt, { max_tokens: 390, temperature: 0.9 }, "END SUMMARY")
-            history = "\nSummary of older entries:\n#{summary}\n\n"
-            history_length = 0
-
-            logger.info("Summarized history:\n#{history}")
-          end
-
-          break if mission_complete
-        else
-          puts "Invalid LLM response format. Please check the response for errors."
-          history += "\n[#{Time.now.utc.iso8601}] System Error\nYour response format was invalid: #{parsed_response}\n\n"
-          logger.error("Invalid LLM response format: #{parsed_response}")
-        end
-      rescue JSON::ParserError => e
-        puts "Failed to parse LLM response. Please check the response for errors."
-        history += "\n[#{Time.now.utc.iso8601}] System Error\nFailed to parse your response: #{e.message} - the raw response was: #{json_response}\n\n"
-        logger.error("Failed to parse LLM response: #{e.message}")
+        rescue JSON::ParserError => e
+          err = "Failed to parse LLM response: #{e.message}. Please check the response for errors." 
+          puts err
+          logger.error(err)
+        end 
       end
+      next if parsed_response.nil?
+      if options[:critic] == false
+        evaluated_responses << parsed_response
+        next
+      end
+      next if options[:reeval_times] == 1
+      puts
+      eval_prompt = build_eval_prompt(parsed_response, options[:mission], console_state)
+      puts
+      #puts eval_prompt
+      evaluated_response = llm.query(eval_prompt, { n_predict: 128, temperature: 0.9}, "END_EVALUATION")
+      puts
+      evaluated_response = evaluated_response.strip
+      evaluated_responses << parsed_response.merge({ 'critic_evaluation' => evaluated_response })
     end
+
+    unless options[:reeval_times] == 1
+      select_prompt = build_select_prompt(options, evaluated_responses, options[:mision], keypresses_history, console_state, previous_next_step)
+      #puts select_prompt
+      while selected_response.nil?
+        print "\nSelect the best response: "
+        selection = llm.query(select_prompt, { n_predict: 2, temperature: 0.3 }, "END_SELECT")
+        puts
+        selection = selection.match(/\d+/).to_s
+        if selection.to_i > 0 && selection.to_i <= evaluated_responses.length
+          selected_response = evaluated_responses[selection.to_i - 1]
+        end
+      end
+    else
+      selected_response = parsed_responses[0]
+    end
+
+    reasoning = selected_response['reasoning']
+    keypresses = selected_response['keypresses'] || []
+    keypresses_fmt = keypresses.map { |key| "\"#{key}\"" }.join(', ')
+    mission_complete = selected_response['mission_complete']
+    new_scratchpad = selected_response['new_scratchpad']
+    next_step = selected_response['next_step']
+    previous_next_step = next_step
+    # Update scratchpad with cursor position
+    timestamp = Time.now.utc.iso8601
+    cursor_position = console_state[:cursor]
+    history += "\n"
+    history += "[#{timestamp}]\n"
+    history += "Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\n"
+    history += "Console State:\n"
+    history += "#{console_state[:content]}\n"
+    history += "Scratchpad entry: #{new_scratchpad}\n"
+    history += "Keypresses: #{keypresses_fmt}\n"
+    history += "Next Step: #{next_step}\n"
+    history += "Evaluation of this step by an external critic: #{selected_response['critic_evaluation']}\n" if options[:critic]
+    history_length += 1
+
+    unless keypresses.empty?
+      tmux.send_keys(keypresses)
+      keypresses_history << keypresses
+    end
+
+    sleep 2 # Give time for the shell to process the key presses
+
+    new_state = tmux.capture_output
+    logger.info("Post-Keypress Console State:\n#{new_state[:content]}")
+
+    # Update history length and condense if needed
+    if history_length >= options[:history_limit]
+      logger.info("Summarizing history due to history limit")
+      summarization_prompt = build_summarization_prompt(history, options[:mission], new_state)
+      #puts summarization_prompt
+      puts
+      summary = llm.query(summarization_prompt, { n_predict: 390, temperature: 0.7 }, "END_SUMMARY")
+      summaries << summary
+      puts
+      summaries.each do |s|
+        history += "\nAn older summary:\n#{s}\n\n"
+      end
+      history_length = 0
+
+      logger.info("Summarized history:\n#{history}")
+    end
+
+    break if mission_complete
   end
 rescue Interrupt
   puts "\nInterrupted. Cleaning up..."

@@ -6,14 +6,15 @@ class LLM
     @editor = editor
     @default_params = default_params
   end
-  def query(prompt, params = {}, stop_at = nil, &block)
+  def query(prompt, params, stop_at = nil, &block)
     params = @default_params.merge(params)
-    uri = @uri.dup
-    request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
-    request.body = {
+    params = params.merge({
       prompt: prompt,
       stream: true,
-    }.to_json
+    })
+    uri = @uri.dup
+    request = Net::HTTP::Post.new(uri, 'Content-Type' => 'application/json')
+    request.body = params.to_json
 
     json_found = false
     full_response = ""
@@ -30,12 +31,15 @@ class LLM
               if chunk.start_with?('data: ')
                 content = JSON.parse(chunk[6..-1])["content"]
                 if content && !content.strip.empty?
-                  print content
-                  $stdout.flush
                   full_response += content
                   if stop_at && full_response.include?(stop_at)
-                    return full_response
+                    print content.gsub(/#{stop_at}.*/m, "")
+                    $stdout.flush
+                    redacted_response = full_response.gsub(/#{stop_at}.*/m, "")
+                    return redacted_response
                   end
+                  print content
+                  $stdout.flush                    
                   # Track brackets for JSON extraction
                   content.each_char do |char|
                     case char

@@ -9,13 +9,13 @@ It does so using locally running llama.cpp at port 8081 (so start it there or ch
 
 ## Usage
 
-Run the program with the following options:
-
-- `-l`: History limit after which compaction by summarization hits.
-- `-m`: Provides the user mission file to be sent to the LLM API.
-- `-a`: This option is currently not implemented and does not perform any action.
-
-## Example
-
-```sh
-ruby pllm.rb -l 5 -m <mission_file>
+```
+Usage: pllm.rb [options]
+    -a, --accumulate                 Accumulate responses for subsequent prompts
+    -e, --edit[=SECONDS]             Allow editing of LLM response before use, with optional timeout in seconds (default 5)
+    -l, --history-limit=LIMIT        Limit the number of entries in the scratchpad history (default 10)
+    -m, --mission=MISSION_FILE       Load mission from a file
+    -r, --reeval-times=TIMES         Number of times to reevaluate a response (default 3)
+    -c, --critic                     Enable critic evaluation of responses
+    -h, --help                       Prints this help
+```

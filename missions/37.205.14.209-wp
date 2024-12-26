@@ -5,18 +5,26 @@ It is a vpsFree.cz VPS running on a vpsAdminOS node. As it comes from the origin
 
 I have uploaded my SSH key to root's authorized keys, so you can reach the machine via ssh root@37.205.14.209.
 
-Make sure you only work on that RemoteUbuDesktop machine, your session starts on a localhost which isn't the same machine.
-
 I would like you to help me setup a WordPress blog on this machine.
 
 It's Ubuntu 24.04 LTS, there's nothing except the base minimal installation.
 
-I would like you to install the latest WordPress from Ubuntu repositories.
+I would like you to install and configure the latest WordPress from Ubuntu repositories.
+
+Use nginx as the web server and MySQL as the database.
 
 I would like the admin user to have the username admin and password admin123changelater
 
-The blog should be accessible via domain blog.snajpa.net, which should be added to /etc/hosts as it's setup in DNS yet, I will do that later.
+The blog shall be accessible via domain blog.snajpa.net, which should be added to /etc/hosts as it's setup in DNS yet, I will do that later.
 
 Please enable HTTPS on the blog using Let's Encrypt.
 
 The mission is complete when there's a working installation of WordPress on https://blog.snajpa.net
+
+Roughly, the steps to complete the mission are:
+- Log in to the machine via SSH
+- Install WordPress, nginx, MySQL
+- Reconfigure WordPress to use MySQL and nginx
+- Configure nginx to serve the blog on blog.snajpa.net
+- Configure automatic HTTPS with Let's Encrypt, automatically renewing the certificate
+- Redirect HTTP to HTTPS
