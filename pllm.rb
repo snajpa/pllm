@@ -343,7 +343,6 @@ logger = Logger.new(LOG_FILE, 'daily')
 logger.level = Logger::DEBUG
 
 options = {
-  accumulate: false,
   edit: false,
   timeout: EDIT_TIMEOUT,
   history_limit: HISTORY_LIMIT,
@@ -356,9 +355,6 @@ options = {
 help_text = ""
 OptionParser.new do |opts|
   opts.banner = "Usage: pllm.rb [options]"
-  opts.on("-a", "--accumulate", "Accumulate responses for subsequent prompts") do |a|
-    options[:accumulate] = a
-  end
   opts.on("-e", "--edit[=SECONDS]", Integer, "Allow editing of LLM response before use, with optional timeout in seconds (default 5)") do |e|
     options[:edit] = true
     options[:timeout] = e || EDIT_TIMEOUT

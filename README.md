@@ -11,7 +11,6 @@ It does so using locally running llama.cpp at port 8081 (so start it there or ch
 
 ```
 Usage: pllm.rb [options]
-    -a, --accumulate                 Accumulate responses for subsequent prompts
     -e, --edit[=SECONDS]             Allow editing of LLM response before use, with optional timeout in seconds (default 5)
     -l, --history-limit=LIMIT        Limit the number of entries in the scratchpad history (default 10)
     -m, --mission=MISSION_FILE       Load mission from a file
