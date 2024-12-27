@@ -558,7 +558,7 @@ begin
       end
     end
 
-    keypresses = selected_response['keypresses']
+    keypresses = selected_response['keypresses'] || []
     if keypresses.nil?
       keypresses = []
     elsif keypresses.is_a?(String)

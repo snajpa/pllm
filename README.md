@@ -11,10 +11,14 @@ It does so using locally running llama.cpp at port 8081 (so start it there or ch
 
 ```
 Usage: pllm.rb [options]
-    -e, --edit[=SECONDS]             Allow editing of LLM response before use, with optional timeout in seconds (default 5)
-    -l, --history-limit=LIMIT        Limit the number of entries in the scratchpad history (default 10)
+        --edit[=SECONDS]             Allow editing of LLM response before use, with optional timeout in seconds (default 5)
+    -l, --limit-history=LIMIT        Limit the number of entries in the mission history (default 10)
+    -c, --console-history            Include console state in history
     -m, --mission=MISSION_FILE       Load mission from a file
-    -r, --reeval-times=TIMES         Number of times to reevaluate a response (default 3)
-    -c, --critic                     Enable critic evaluation of responses
+    -e, --eval-times=TIMES           Number of times to reevaluate a response (default 3)
+    -s, --select-times=TIMES         Number of times to retry selecting a response, redo the whole round if fails (default 1)
+    -r, --review-critic              Enable critic evaluation of responses
+    -a, --apply-critic               Apply critic evaluation to response after selection
+    -A, --apply-critic-see-choices   Apply critic evaluation to response after selection, but see the choices first
     -h, --help                       Prints this help
 ```
