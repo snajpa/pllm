@@ -14,11 +14,12 @@ require './lib/llm'
 require './lib/tmux'
 
 # --- Constants ---
-REEVAL_TIMES = 3
+REEVAL_TIMES = 1
+SELECT_TIMES = 1
 EDIT_TIMEOUT = 5
 HISTORY_LIMIT = 5
-WINDOW_X = 120
-WINDOW_Y = 30
+WINDOW_X = 80
+WINDOW_Y = 24
 LLAMA_API_ENDPOINT = 'http://localhost:8081/v1/completions'
 DEFAULT_MISSION = '
 
@@ -47,97 +48,42 @@ def build_main_prompt(mission, history, console_state, options, iteration_n)
   console_content = console_state[:content]
 
   prompt = <<~PROMPT
-  You are a helpful AI system designed to suggest key presses to accomplish a mission on a console interface.
+  You are a specialized assistant guiding the user step by step in an environment without explicitly naming the underlying multiplexer. Each iteration, analyze the latest console output, mission, and limited history to propose exactly one carefully validated sequence of keypresses.
 
-  The system has started a new session for the user and you in a console emulator. You will be provided with the current console state, mission, and instructions to guide the user through the mission.
+  Key requirements:
+  • Provide extremely precise steps when navigating pagers (e.g. "Down", "PageDown", "Q" to quit pager) or editors (arrow keys and inserts).  
+  • Never lump multiple distinct commands into a single iteration.  
+  • For shell commands, type them character by character and end with "Enter".  
+  • Forbidden: "C-d". If needed, use "C-c" to interrupt a process or "exit" to terminate the shell.  
+  • All keypresses must be in a JSON array of strings, e.g. ["g", "i", "t", "Space", "p", "u", "l", "l", "Enter"].  
+  • Maintain "branch_map" for the big-picture plan or relevant branching details, use arrows, mark your position, skip completed.
+  • “next_move” describes the future immediate action or if we need to revisit a prior step.
+  • Keep “reasoning” short and factual.  
+  • “mission_complete” should be true only when the stated mission is fully done.  
 
-  For each iteration, you will receive the current console state, mission, and history of the user's actions. You will need to analyze the information and suggest key presses to help the user progress towards the mission.
-
-  Instructions for achieving the user's mission:
-  - You are guiding the user through an interactive console session.
-  - Carefully identify the current state of the mission, plan the next steps, and suggest key presses to help the user progress.
-  - At the beginning of the mission, it is a good idea to start by thinking about the overall plan and breaking it down into smaller steps, no need to issue key presses immediately.
-  - It is a good idea to note how the system prompt (PS1) looks like and take a note when it changes.
-
-  Notes about the system you're operating in: 
-  - History is compacted periodically by the system every #{options[:history_limit]} entries
-  - In order to preserve your progress (especially involving on any lists of things), you must place that information in new_scratchpad or next_step.
-  - This also implies that you always have #{options[:history_limit]} iterations to explore a single coherent path of actions.
-  - Currently you have #{if options[:history_limit] > 1 then (options[:history_limit] - (iteration_n % options[:history_limit])) else 0 end} iterations to finish your current line of thought.
-
-  Instructions for operating the console session:
-  - The console output is always prepended with line numbers by the system for your convenience. These are not part of the actual console content.
-  - The console window size is #{WINDOW_X} columns by #{WINDOW_Y} rows.
-  - There are no scrollbars, so the console content is limited to the visible area.
-  - The console content is updated in real-time, and you can issue key presses to interact with the console.
-  - The cursor position is indicated by the block symbol '█'.
-  - Avoid batching multiple commands. Issue one command at a time and wait for the console to update.
-  - Expect when a command can invoke an interactive editor or a pager.
-  - Ensure proper navigation in interactive programs like editors, pagers, etc.
-  - Always ensure you are working with the latest shell prompt, otherwise you tend to modify older content, which is bad.
-  - Beware if a command invokes a pager, navigate the user through the pager to show all the relevant parts of the output, don't be satisfied with one run if there might be more important data below.
-  - Asses whether the user is in a pager or an editor and act accordingly.
-  - The block symbol '█' indicates the current cursor position.
-
-  Instructions for issuing keypresses:
-  - On each step, create a plan and then provide the key presses needed.
-  - Normal characters: "a", "b", "c", "A", "B", "C", "1", "2", ".", " ", "\"", etc.
-  - Special named keys, read carefully, use literally: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
-  - Ctrl keys: Use C- notation for Ctrl keys. For example, "C-c" for Ctrl+c, "C-r" for Ctrl+r, etc.
-  - Alt keys: Use M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
-  - Send uppercase letters directly as uppercase. No need for Shift notation.
-  - If you need multiple steps, output them in a single "keypresses" array, one key per element.
-  - You are forbidden to use "C-d". If you need to exit a shell, use "C-c" to interrupt the current process and then "exit" to exit the shell.
-  - If you intend there to be a space between command and/or arguments, spell it out as "Space".
-  - If you need to issue a command, provide the key presses to type the command and then "Enter" to execute it.
-  - No command chaining in one iteration, only one command per iteration.
-  - Example sequences:
-    - ["l", "s", "Enter"]
-    - ["C-c"]
-    - ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", "'", "Enter"]
-
-  Response format:
-  - Each element in "keypresses" array is a single keypress.
-  - Format response in valid JSON only, example below.
-  - Example:
-  ```json
+  Return valid JSON with this shape:
   {
-    "reasoning": "(ultra-brief reasoning)",
+    "reasoning": "(brief reason)",
     "mission_complete": false,
-    "new_scratchpad": "(something about verifying completion of previous step)",
-    "keypresses": ["Enter", "e", "x", "a", "m", "p", "l", "e", "Enter"],
-    "next_step": "(brief description of next step and general direction)"
+    "branch_map": "(branching plan)",
+    "keypresses": ["...","Enter"],
+    "next_move": "(immediate next step or backtrack directive)"
   }
-  ```
 
-  -----------------------------------------------------------------------------------
-  Mission history (older entries are at the top, new entries at the bottom):
-  -----------------------------------------------------------------------------------
+  You currently have #{ if options[:history_limit] > 1 then (options[:history_limit] - (iteration_n % options[:history_limit])) else 0 end } iteration steps left, so be efficient.
 
+  =====================
+  HISTORY SNIPPET:
   #{history}
-  <new entry with cursor position, console state, new_scratchpad, keypresses and next_step will be added here>
-  -----------------------------------------------------------------------------------
+  =====================
 
-  -----------------------------------------------------------------------------------
-  User's Mission:
-  -----------------------------------------------------------------------------------
-  The user's end goal is to:
-  --
+  MISSION:
   #{mission}
-  --
-  Are we on the right track? Use scratchpad_new and next_step to verify and plan the next steps.  
-  -----------------------------------------------------------------------------------
 
-  -----------------------------------------------------------------------------------
-  CURRENT CONSOLE STATE FOR YOUR ANALYSIS:
-  -----------------------------------------------------------------------------------
-     | Console window wize: (#{WINDOW_X}, #{WINDOW_Y})
-     | Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
-     --------------------------------------------------------------------------------
+  CONSOLE (cursor at (#{cursor_position[:x]}, #{cursor_position[:y]})):
   #{console_content}
-  -----------------------------------------------------------------------------------
 
-  Your suggestions for this iteration:
+  Provide your JSON response now:
   ```json
   PROMPT
 end
@@ -195,7 +141,7 @@ def build_summarization_prompt(full_log, mission, console_state)
   SUMMARY_PROMPT
 end
 
-def build_eval_prompt(response, mission, console_state)
+def build_critic_prompt(response, mission, console_state)
   cursor_position = console_state[:cursor]
   console_content = console_state[:content]
 
@@ -219,8 +165,8 @@ def build_eval_prompt(response, mission, console_state)
   Reasoning: #{response['reasoning']}
   Keypresses array: #{response['keypresses']}
   Mission complete: #{response['mission_complete']}
-  New scratchpad: #{response['new_scratchpad']}
-  Next step: #{response['next_step']}
+  New branch map: #{response['branch_map']}
+  Next step: #{response['next_move']}
 
   Will the suggested keypresses really deliver what was intended or could there be a mistake? For example, when the user is supposed to press Enter, you can't suggest pressing E, then n, then t, then e, then r. That's not the same as pressing Enter.
 
@@ -238,7 +184,7 @@ def build_eval_prompt(response, mission, console_state)
   EVAL_PROMPT
 end
 
-def build_select_prompt(options, responses, mission, keypresses_history, console_state, previous_next_step)
+def build_select_prompt(options, responses, mission, keypresses_history, console_state, previous_next_move)
   cursor_position = console_state[:cursor]
   console_content = console_state[:content]
 
@@ -311,11 +257,11 @@ def build_select_prompt(options, responses, mission, keypresses_history, console
   Please provide the number of the best response given the context of the mission and the current state of the console.
 
   SELECT_PROMPT
-  if previous_next_step != ""
+  if previous_next_move != ""
     prompt += <<~SELECT_PROMPT
     To help you make a better decision, here's what pllm was planning in this step:
 
-    "#{previous_next_step}".
+    "#{previous_next_move}".
     SELECT_PROMPT
   end
   prompt += <<~SELECT_PROMPT
@@ -323,7 +269,95 @@ def build_select_prompt(options, responses, mission, keypresses_history, console
   So, given all this information, choose the best response number and provide it as a single number.
 
   The best response number is:
+
   SELECT_PROMPT
+
+  prompt
+end
+
+def build_apply_critic_prompt(options, critiqued_responses, selected_number, mission, console_state)
+  cursor_position = console_state[:cursor]
+  console_content = console_state[:content]
+  prompt = <<~APPLY_CRITIC_PROMPT
+  You are tasked with applying the critic evaluation to the selected response from the LLM agent called 'pllm'. The agent's goal is to help the user accomplish a mission by providing keypress suggestions into user's console.
+
+  The agent has provided multiple responses to a single prompt. Your task is to compile the best response based on:
+  - the context of the mission and the user's progress
+  - the critic evaluation of the responses
+  - selected best response number
+
+  This is the last time you can review the responses and apply critic evaluation to the selected response.
+
+  Please consider the critic evaluation(s) and integrate them into the selected response.
+
+  Instructions for operating the console session:
+  - The console output is always prepended with line numbers by the system for your convenience. These are not part of the actual console content.
+  - The console window size is #{WINDOW_X} columns by #{WINDOW_Y} rows.
+  - There are no scrollbars, so the console content is limited to the visible area.
+  - The console content is updated in real-time, and you can issue key presses to interact with the console.
+  - The cursor position is indicated by the block symbol '█'.
+  - Avoid batching multiple commands. Issue one command at a time and wait for the console to update.
+  - Expect when a command can invoke an interactive editor or a pager.
+  - Ensure proper navigation in interactive programs like editors, pagers, etc.
+  - Beware if a command invokes a pager, navigate the user through the pager to show all the relevant parts of the output, don't be satisfied with one run if there might be more important data below.
+  - Asses whether the user is in a pager or an editor and act accordingly.
+  - The block symbol '█' indicates the current cursor position.
+
+  Instructions for issuing keypresses:
+  - Normal characters: "a", "b", "c", "A", "B", "C", "1", "2", ".", " ", "\"", etc.
+  - Special named keys, read carefully, use literally: "Enter", "Tab", "BSpace", "Escape", "Up", "Down", "Left", "Right", "Home", "End", "PageUp", "PageDown", "Insert", "Delete"
+  - Ctrl keys: Use C- notation for Ctrl keys. For example, "C-c" for Ctrl+c, "C-r" for Ctrl+r, etc.
+  - Alt keys: Use M- notation for Alt keys. For example, "M-a" for Alt+a, "M-x" for Alt+x, etc.
+  - Send uppercase letters directly as uppercase. No need for Shift notation.
+  - If you need multiple steps, output them in a single "keypresses" array, one key per element.
+  - You are forbidden to use "C-d". If you need to exit a shell, use "C-c" to interrupt the current process and then "exit" to exit the shell.
+  - If you intend there to be a space between command and/or arguments, spell it out as "Space".
+  - If you need to issue a command, provide the key presses to type the command and then "Enter" to execute it.
+  - No command chaining in one iteration, only one command per iteration.
+  - Example sequences:
+    - ["l", "s", "Enter"]
+    - ["C-c"]
+    - ["e", "c", "h", "o", " ", "'", "H", "e", "l", "l", "o", "'", "Enter"]
+
+  User's Mission:
+
+  The user's end goal is to:
+  --
+  #{mission}
+  --
+
+  CURRENT CONSOLE STATE FOR YOUR ANALYSIS:
+     | Console window wize: (#{WINDOW_X}, #{WINDOW_Y})
+     | Current cursor position: (#{cursor_position[:x]}, #{cursor_position[:y]})
+  #{console_content}
+
+  Here are the responses and their critic evaluations:
+
+  APPLY_CRITIC_PROMPT
+  
+  critiqued_responses.each_with_index do |response, index|
+    prompt += "Response ##{index + 1}:\n"
+    response.delete(:critic_evaluation)
+    prompt += response.to_s
+    prompt += "\n\n"
+  end
+
+  prompt += <<~APPLY_CRITIC_PROMPT
+
+  End of responses.
+
+  Selected response number: #{selected_number}
+
+  Follow this JSON format in your response:
+  - Each element in "keypresses" array is a single keypress.
+  - Format response in valid JSON only, example below.
+  - You should reproduce parts you're not changing verbatim. You should carefully integrate the rest.
+  - Fields "reasoning", "mission_complete", "branch_map", "next_move" are mandatory.
+  - You might modify "critic_evaluation" to reflect your changes.
+  - Finally, there is one trick. You may reply with NO_CHANGE and stop if desired.
+  Your best response given this information is:
+  ```json
+  APPLY_CRITIC_PROMPT
 
   prompt
 end
@@ -333,8 +367,8 @@ def valid_llm_response?(response)
     response.key?('reasoning') &&
     response.key?('keypresses') &&
     response.key?('mission_complete') &&
-    response.key?('new_scratchpad') &&
-    response.key?('next_step') &&
+    response.key?('branch_map') &&
+    response.key?('next_move') &&
     response['keypresses'].is_a?(Array)
 end
 
@@ -346,9 +380,13 @@ options = {
   edit: false,
   timeout: EDIT_TIMEOUT,
   history_limit: HISTORY_LIMIT,
+  history_console_state: false,
   mission: DEFAULT_MISSION,
   reeval_times: REEVAL_TIMES,
+  select_times: SELECT_TIMES,
   critic: false,
+  apply_critic: false,
+  apply_critic_see_choices: false,
   help: false
 }
 
@@ -359,18 +397,33 @@ OptionParser.new do |opts|
     options[:edit] = true
     options[:timeout] = e || EDIT_TIMEOUT
   end
-  opts.on("-l", "--history-limit=LIMIT", Integer, "Limit the number of entries in the scratchpad history (default 10)") do |l|
+  opts.on("-l", "--limit-history=LIMIT", Integer, "Limit the number of entries in the mission history (default 10)") do |l|
     options[:history_limit] = l
+  end
+  opts.on("-c", "--console-history", "Include console state in history") do |c|
+    options[:history_console_state] = true
   end
   opts.on("-m", "--mission=MISSION_FILE", "Load mission from a file") do |m|
     mission = File.read(m)
     options[:mission] = mission
   end
-  opts.on("-r", "--reeval-times=TIMES", Integer, "Number of times to reevaluate a response (default 3)") do |r|
-    options[:reeval_times] = r
+  opts.on("-e", "--eval-times=TIMES", Integer, "Number of times to reevaluate a response (default 3)") do |e|
+    options[:reeval_times] = e
   end
-  opts.on("-c", "--critic", "Enable critic evaluation of responses") do |c|
-    options[:critic] = c
+  opts.on("-s", "--select-times=TIMES", Integer, "Number of times to retry selecting a response, redo the whole round if fails (default 1)") do |s|
+    options[:select_times] = s
+  end
+  opts.on("-r", "--review-critic", "Enable critic evaluation of responses") do |r|
+    options[:critic] = true
+  end
+  opts.on("-a", "--apply-critic", "Apply critic evaluation to response after selection") do |a|
+    options[:critic] = true
+    options[:apply_critic] = true
+  end
+  opts.on("-A", "--apply-critic-see-choices", "Apply critic evaluation to response after selection, but see the choices first") do |a|
+    options[:critic] = true
+    options[:apply_critic] = true
+    options[:apply_critic_see_choices] = true
   end
   opts.on("-h", "--help", "Prints this help") do
     options[:help] = true
@@ -391,9 +444,9 @@ history_length = 0
 iteration = 0
 mission_complete = false
 parsed_responses = []
-evaluated_responses = []
+critiqued_responses = []
 keypresses_history = []
-previous_next_step = ""
+previous_next_move = ""
 
 logger.formatter = proc do |severity, datetime, progname, msg|
   "[#{session_name}] #{datetime} - #{severity}: #{msg}\n"
@@ -401,7 +454,7 @@ end
 
 llm = LLM.new(logger,
               LLAMA_API_ENDPOINT, options, ENV['EDITOR'],
-              { n_predict: 384, temperature: 0.95 })
+              { n_predict: 384, temperature: 0.6 })
 tmux = Tmux.new(session_name, WINDOW_X, WINDOW_Y)
 
 begin
@@ -410,7 +463,7 @@ begin
 
   until mission_complete
     parsed_responses = []
-    evaluated_responses = []
+    critiqued_responses = []
     selected_response = nil
     iteration += 1
     console_state = tmux.capture_output
@@ -422,72 +475,95 @@ begin
     options[:reeval_times].times do |i|
       parsed_response = nil
       evaluated_response = nil
-      puts "\nQuerying LLM to get the next suggestions... (#{i+1}/#{options[:reeval_times]})"
+      puts "\nIteration #{iteration}: querying LLM to get the next suggestions... (#{i+1}/#{options[:reeval_times]})"
       llm.query(prompt, {}) do |json_response|
         begin
           parsed_response = JSON.parse(json_response)
           if valid_llm_response?(parsed_response)
             logger.info("\n#{prompt}\n{#{json_response}}")
-            parsed_responses << parsed_response
+            parsed_responses[i] = parsed_response
+          else
+            parsed_response = nil
           end
         rescue JSON::ParserError => e
+          parsed_response = nil
           err = "Failed to parse LLM response: #{e.message}. Please check the response for errors." 
           puts err
           logger.error(err)
         end 
       end
-      next if parsed_response.nil?
+      next if parsed_response.nil? 
       if options[:critic] == false
-        evaluated_responses << parsed_response
+        critiqued_responses[i] = parsed_response
         next
       end
-      next if options[:reeval_times] == 1
-      puts
-      eval_prompt = build_eval_prompt(parsed_response, options[:mission], console_state)
+      eval_prompt = build_critic_prompt(parsed_response, options[:mission], console_state)
       puts
       #puts eval_prompt
-      evaluated_response = llm.query(eval_prompt, { n_predict: 128, temperature: 0.9}, "END_EVALUATION")
+      evaluated_response = llm.query(eval_prompt, { n_predict: 256, temperature: 0.8 }, "END_EVALUATION")
       puts
       evaluated_response = evaluated_response.strip
-      evaluated_responses << parsed_response.merge({ 'critic_evaluation' => evaluated_response })
+      critiqued_responses[i] = parsed_response.merge({ critic_evaluation: evaluated_response })
     end
-
+    select_rounds = 0
+    selection = nil
     unless options[:reeval_times] == 1
-      select_prompt = build_select_prompt(options, evaluated_responses, options[:mision], keypresses_history, console_state, previous_next_step)
+      select_prompt = build_select_prompt(options, critiqued_responses, options[:mision], keypresses_history, console_state, previous_next_move)
       #puts select_prompt
       while selected_response.nil?
+        select_rounds += 1
         print "\nSelect the best response: "
-        selection = llm.query(select_prompt, { n_predict: 2, temperature: 0.3 }, "END_SELECT")
+        selection = llm.query(select_prompt, { n_predict: 10, temperature: 0.3 }, "END_SELECT")
         puts
         selection = selection.match(/\d+/).to_s
-        if selection.to_i > 0 && selection.to_i <= evaluated_responses.length
-          selected_response = evaluated_responses[selection.to_i - 1]
+        if selection.to_i > 0 && selection.to_i <= critiqued_responses.length
+          selected_response = critiqued_responses[selection.to_i - 1]
+        end
+        if select_rounds > options[:select_times]
+          break
         end
       end
     else
       selected_response = parsed_responses[0]
     end
+    if select_rounds > options[:select_times]
+      next
+    end
+    if options[:apply_critic]
+      puts "\nApplying critic evaluation to the selected response...\n"
+      if options[:apply_critic_see_choices]
+        selection = 1
+        param_responses = critiqued_responses
+      else
+        param_responses = [ selected_response ]
+      end
+      apply_critic_response = nil
+      apply_critic_prompt = build_apply_critic_prompt(options, param_responses, selection, options[:mission], console_state)
+      llm.query(apply_critic_prompt, { temperature: 0.3 }) do |fixedup_json_response|
+        begin
+          if fixedup_json_response.contains("NO_CHANGE")
+            apply_critic_response = param_responses[selection-1]
+          else
+            apply_critic_response = JSON.parse(fixedup_json_response)
+            if valid_llm_response?(apply_critic_response)
+              logger.info("\n#{apply_critic_prompt}\n{#{fixedup_json_response}}")
+              selected_response = apply_critic_response
+            end
+          end
+        rescue JSON::ParserError => e
+          err = "Failed to parse LLM response: #{e.message}. Please check the response for errors." 
+          puts err
+          logger.error(err)
+        end
+      end
+    end
 
-    reasoning = selected_response['reasoning']
-    keypresses = selected_response['keypresses'] || []
-    keypresses_fmt = keypresses.map { |key| "\"#{key}\"" }.join(', ')
-    mission_complete = selected_response['mission_complete']
-    new_scratchpad = selected_response['new_scratchpad']
-    next_step = selected_response['next_step']
-    previous_next_step = next_step
-    # Update scratchpad with cursor position
-    timestamp = Time.now.utc.iso8601
-    cursor_position = console_state[:cursor]
-    history += "\n"
-    history += "[#{timestamp}]\n"
-    history += "Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\n"
-    history += "Console State:\n"
-    history += "#{console_state[:content]}\n"
-    history += "Scratchpad entry: #{new_scratchpad}\n"
-    history += "Keypresses: #{keypresses_fmt}\n"
-    history += "Next Step: #{next_step}\n"
-    history += "Evaluation of this step by an external critic: #{selected_response['critic_evaluation']}\n" if options[:critic]
-    history_length += 1
+    keypresses = selected_response['keypresses']
+    if keypresses.nil?
+      keypresses = []
+    elsif keypresses.is_a?(String)
+      keypresses = [ keypresses ]
+    end
 
     unless keypresses.empty?
       tmux.send_keys(keypresses)
@@ -495,6 +571,23 @@ begin
     end
 
     sleep 2 # Give time for the shell to process the key presses
+
+    mission_complete = selected_response['mission_complete']
+    next_move = selected_response['next_move']
+    previous_next_move = next_move
+    timestamp = Time.now.utc.iso8601
+    cursor_position = console_state[:cursor]
+    history += "\n"
+    history += "[#{timestamp}]\n"
+    if options[:history_console_state]
+      history += "Cursor Position: (#{cursor_position[:x]}, #{cursor_position[:y]})\n"
+      history += "Console State:\n"
+      history += "#{console_state[:content]}\n"
+    end
+    history += selected_response.to_s
+    history += "\n"
+    history += "Evaluation of this step by an external critic: #{selected_response['critic_evaluation']}\n" if options[:critic]
+    history_length += 1
 
     new_state = tmux.capture_output
     logger.info("Post-Keypress Console State:\n#{new_state[:content]}")
